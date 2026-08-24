@@ -1,5 +1,4 @@
 from enum import Enum
-
-class ContentTypeEnum(Enum):
-    HTML="html"
-    PDF="pdf"
+class ContentTypeEnum(str, Enum):
+    HTML = "text/html"
+    PDF = "application/pdf"

@@ -1,16 +1,24 @@
-from pydantic import BaseModel,Field
-from datetime import datetime
+from datetime import datetime, timezone
+from enum import Enum
+from .RetrivalEnum import ContentTypeEnum
+
+from pydantic import BaseModel, Field
 
 
-class RawDocument:
 
-    id: str=Field(...,min_lenght=1)
-    source_url: str=Field(...,min_lenght=1)
-    source_type: str=Field(...,min_lenght=1)
 
-    title: str = None
-    fetched_at: datetime= Field(default=datetime.utcnow())
-    content_type: str  = Field(...,min_lenght=1)
-    
-    raw_text: str = Field(...,min_lenght=1)  # extracted plain text for pdfs
-    raw_pdf_path: str = None
+class UrlDocument(BaseModel):
+    id: str = Field(..., min_length=1)
+    source_url: str = Field(..., min_length=1)
+    source_type: str = Field(..., min_length=1)
+
+    title: str | None = None
+
+    fetched_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    content_type: ContentTypeEnum
+
+    raw_text: str = Field(..., min_length=1)
+

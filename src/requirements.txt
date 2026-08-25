@@ -3,3 +3,5 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 python-dotenv==1.0.1
 pydantic-settings==2.2.1
+crawl4ai==0.7.4
+beautifulsoup4==4.12.3

@@ -1,0 +1,119 @@
+# Theme 1 (AI Regulation & Democratic Values) source configuration.
+#
+# CHANGES vs. the original file:
+#   - Standardized filename to `sources.yaml` (code previously had a mismatch
+#     between `source.yaml` and `sources.yaml` across different modules).
+#   - `source_type` values now match the actual SourceType enum
+#     (RetrievalEnum.py). The original used free-text values like
+#     "policy_document" / "industry_report" which don't exist in the enum and
+#     would fail Pydantic validation the moment it's actually enforced.
+#   - `category` values now match SourceCategory. Added missing enum members
+#     (national_strategy, data_protection, global_governance) rather than
+#     silently coercing everything into "other".
+#   - Added three new source groups for Egypt (the project's chosen target
+#     region for the stakeholder simulation) - the original file only covered
+#     the EU + generic international sources, with nothing about the region
+#     the whole scenario is actually about.
+#   - Added `max_depth` / `max_pages` per source group instead of relying on
+#     scraper-wide defaults, so listing pages (e.g. Wamda, MENAbytes) can crawl
+#     deeper than single-document legal PDFs.
+
+sources:
+  - name: "EU Official Legal Framework"
+    source_type: "legal"
+    category: "regulation"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai"
+      - "https://digital-strategy.ec.europa.eu/en/faqs/navigating-ai-act"
+      - "https://ai-act-service-desk.ec.europa.eu/en/ai-act/eu-ai-act-implementation-timeline"
+      - "https://artificialintelligenceact.eu/"
+      # Note: eur-lex.europa.eu's regulation page is JS-heavy and often
+      # fails clean text extraction - verify output quality after a run and
+      # swap in the plain-text/print mirror if the saved body looks empty.
+      - "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:32024R1689"
+
+  - name: "International Regulatory Frameworks"
+    source_type: "international"
+    category: "global_governance"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://www.whitehouse.gov/ostp/ai-bill-of-rights/"
+      - "https://www.nist.gov/itl/ai-risk-management-framework"
+      - "https://oecd.ai/en/principles"
+      - "https://www.governance.ai/"
+
+  - name: "Civil Society & Digital Rights (EU/Global)"
+    source_type: "civil_society"
+    category: "digital_rights"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://edri.org/our-work/policy-areas/artificial-intelligence/"
+      - "https://www.accessnow.org/issue/artificial-intelligence/"
+      - "https://www.eff.org/issues/ai"
+      - "https://algorithmwatch.org/en/topics/ai-act/"
+      - "https://www.amnesty.org/en/tech/"
+
+  - name: "Tech & Industry / Startups Context (EU)"
+    source_type: "industry"
+    category: "technology"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://www.ccianet.org/issues/artificial-intelligence/"
+      - "https://www.digitaleurope.org/policy/artificial-intelligence/"
+      - "https://business.sifted.eu/"
+
+  - name: "Academic & Research Analysis"
+    source_type: "research"
+    category: "academic"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://fhi.ox.ac.uk/research/"
+      - "https://cais.org/"
+      - "https://aipolicy.law.stanford.edu/"
+
+  # ============================================================
+  # Target region: Egypt - added for Theme 1's stakeholder scenario.
+  # ============================================================
+
+  - name: "Egypt National AI & Data Governance"
+    source_type: "government"
+    category: "national_strategy"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://ai.gov.eg/SynchedFiles/en/Resources/AIstrategy%20English%2016-1-2025-1.pdf"
+      - "https://mcit.gov.eg/en/Artificial_Intelligence"
+      - "https://mcit.gov.eg/en/Media_Center/Press_Room/Press_Releases/66939"
+
+  - name: "Egypt Data Protection Law"
+    source_type: "legal"
+    category: "data_protection"
+    max_depth: 1
+    max_pages: 5
+    urls:
+      - "https://www.sharkawylaw.com/wp-content/uploads/2021/05/Data-Protection-Law-Translation-dual-text.pdf"
+
+  - name: "Egypt & MENA Civil Society / Digital Rights"
+    source_type: "civil_society"
+    category: "digital_rights"
+    max_depth: 1
+    max_pages: 10
+    urls:
+      - "https://timep.org/reports-briefings/timep-brief-use-of-surveillance-technology-in-mena/"
+      - "https://madr.network/"
+      - "https://freedomhouse.org/country/egypt/freedom-net/2024"
+
+  - name: "Egypt Tech & Startup Ecosystem"
+    source_type: "industry"
+    category: "technology"
+    max_depth: 2
+    max_pages: 20
+    urls:
+      - "https://www.wamda.com/country/egypt"
+      - "https://www.menabytes.com/"

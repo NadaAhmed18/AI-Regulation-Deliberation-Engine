@@ -2,7 +2,7 @@ import os
 import re
 import numpy as np
 from typing import List
-from src.config import MAX_CHARS
+from src.config import MAX_CHARS, MAX_CHUNKS, SLIDING_SENTENCES
 
 try:
     from config import VECTOR_DIMENSION
@@ -36,7 +36,67 @@ class Embedder:
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}")
 
+    def chunk_text(self, text: str) -> List[str]:
+        """
+        Splits a long document into overlapping chunks based on sentences.
+        Respects MAX_CHARS per chunk and SLIDING_SENTENCES for overlap.
+        Stops extracting if MAX_CHUNKS limit is reached.
+        """
+        # Split text by punctuation (. ! ?) while keeping the punctuation attached to the sentence
+        raw_sentences = re.split(r'(?<=[.!?])(?:\s+|\n+)', text)
+        sentences = [s.strip() for s in raw_sentences if s.strip()]
+
+        if not sentences:
+            return []
+
+        chunks = []
+        current_chunk = []
+        current_length = 0
+
+        i = 0
+        while i < len(sentences):
+            sentence = sentences[i]
+            sentence_len = len(sentence) + 1  # +1 accounts for the space between sentences
+
+            # Edge case: A single sentence is larger than MAX_CHARS
+            if sentence_len > MAX_CHARS:
+                if current_chunk:
+                    chunks.append(" ".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                    if len(chunks) >= MAX_CHUNKS: break
+                
+                # Hard truncate the massive sentence and add as its own chunk
+                chunks.append(sentence[:MAX_CHARS])
+                if len(chunks) >= MAX_CHUNKS: break
+                i += 1
+                continue
+
+            # If adding this sentence exceeds the limit, finalize the current chunk
+            if current_length + sentence_len > MAX_CHARS:
+                chunks.append(" ".join(current_chunk))
+                if len(chunks) >= MAX_CHUNKS: 
+                    break
+                
+                # Slide back for context overlap (e.g., keep the last 2 sentences)
+                overlap = current_chunk[-SLIDING_SENTENCES:] if SLIDING_SENTENCES > 0 else []
+                current_chunk = overlap
+                current_length = sum(len(s) + 1 for s in overlap)
+                # Notice we do NOT increment `i` here, because the current sentence 
+                # still needs to be added to the new chunk.
+            else:
+                current_chunk.append(sentence)
+                current_length += sentence_len
+                i += 1
+
+        # Add any remaining sentences as the final chunk
+        if current_chunk and len(chunks) < MAX_CHUNKS:
+            chunks.append(" ".join(current_chunk))
+
+        return chunks
+
     def _smart_truncate(self, text: str, max_chars: int = MAX_CHARS) -> str:
+        """Acts as an absolute safety net for the embed function."""
         if len(text) <= max_chars:
             return text
             
@@ -55,6 +115,7 @@ class Embedder:
         if not texts:
             return np.array([], dtype=np.float32).reshape(0, VECTOR_DIMENSION)
             
+        # _smart_truncate is applied here just in case a chunk bypassed the chunker limit
         safe_texts = [self._smart_truncate(t) for t in texts]
 
         if self.model_type == "voyage":

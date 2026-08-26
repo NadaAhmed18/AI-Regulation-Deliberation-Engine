@@ -1,3 +1,5 @@
+# python -m src.rag.stages.scraper
+
 import asyncio
 import json
 import os
@@ -7,33 +9,100 @@ from typing import List, Dict, Any
 
 import trafilatura
 from crawl4ai import AsyncWebCrawler
+from flashrank import Ranker, RerankRequest
+from src.config import MAX_RELATED_LINKS
 
 
-def clean_content(html: str, fallback_markdown: str, links: List[str]) -> Dict[str, Any]:
+# Initialize the lightweight local reranker globally so it only loads into memory once
+print("[*] Loading FlashRank local ranking model...")
+ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2")
+
+
+def pre_filter_links(links: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
-    Universal cleaner using Trafilatura and Regex.
-    Replaces the need for domain-specific adapters.
+    PRE-FILTER: Uses Regex to instantly drop obvious garbage before AI processing.
+    Expects dictionaries: {"href": "...", "text": "..."}
     """
-    # 1. Trafilatura magically drops menus, footers, and sidebars from raw HTML
+    junk_patterns = [
+        r'(facebook|twitter|linkedin|whatsapp|youtube)\.com',
+        r'share_on_',
+        r'/(contact_us|feedback|disclaimer|privacy_statement|site_map|login|createaccount|lang)/?',
+        r'/(Special|Help|Wikipedia|File|Category|Portal|Template|Talk|Template_talk):',
+        r'(action=(edit|history|info)|printable=yes|returnto=)',
+        r'index\.php\?',
+        r'_\(identifier\)'
+    ]
+    junk_regex = re.compile('|'.join(junk_patterns), re.IGNORECASE)
+    
+    clean_links = []
+    seen_urls = set()
+    
+    for link in links:
+        url = link.get("href", "")
+        if not url.startswith('http') or url in seen_urls:
+            continue
+            
+        if "wikipedia.org" in url and not url.startswith("https://en.wikipedia.org"):
+            continue
+            
+        if not junk_regex.search(url):
+            clean_links.append(link)
+            seen_urls.add(url)
+            
+    return clean_links
+
+
+def smart_rank_links(page_title: str, raw_links: List[Dict[str, str]]) -> List[str]:
+    """
+    AI RERANKER: Uses FlashRank to score links based on relevance to the page title.
+    Returns only the most relevant `MAX_RELATED_LINKS` URLs as strings.
+    """
+    # 1. Strip the obvious junk using regex
+    filtered_links = pre_filter_links(raw_links)
+    
+    if not filtered_links:
+        return []
+
+    # 2. Format passages for FlashRank
+    passages = []
+    for i, link in enumerate(filtered_links):
+        text = link.get("text", "").strip()
+        # If the link has no anchor text, fallback to the URL path for ranking
+        if not text:
+            text = urlparse(link["href"]).path.split("/")[-1].replace("-", " ")
+        
+        # Discard empty strings
+        if len(text) > 2:
+            passages.append({"id": i, "text": text, "meta": link})
+
+    if not passages:
+        return []
+
+    # 3. Ask AI to score the links against the page title 
+    # Fallback query if page has no title
+    query = page_title if page_title else "Artificial Intelligence Policy and Information"
+    request = RerankRequest(query=query, passages=passages)
+    
+    ranked_results = ranker.rerank(request)
+
+    # 4. Keep only the top results based on config threshold
+    best_links = []
+    for result in ranked_results[:MAX_RELATED_LINKS]:
+        best_links.append(result["meta"]["href"])
+
+    return best_links
+
+
+def clean_content(html: str, fallback_markdown: str) -> str:
+    """Universal text cleaner using Trafilatura and Regex."""
     body = trafilatura.extract(html, include_links=False, include_images=False)
     
-    # 2. Fallback to Crawl4AI markdown if Trafilatura fails
     if not body or len(body) < 150:
         body = fallback_markdown
 
-    # 3. Strip noisy markdown images/empty links
     body = re.sub(r'!\[.*?\]\([^\)]+\)', '', body)
     body = re.sub(r'\[\s*\]\([^\)]+\)', '', body)
-    body = re.sub(r'\n\s*\n', '\n\n', body).strip()
-
-    # 4. Filter out useless social/system URLs
-    bad_keywords = ["facebook.com", "twitter.com", "youtube.com", "javascript:", "action=edit"]
-    clean_links = [
-        str(link) for link in set(links) 
-        if isinstance(link, str) and not any(bad in link for bad in bad_keywords)
-    ]
-
-    return {"body": body, "related_documents": clean_links}
+    return re.sub(r'\n\s*\n', '\n\n', body).strip()
 
 
 async def _fetch_url(crawler: AsyncWebCrawler, url: str) -> tuple:
@@ -43,14 +112,10 @@ async def _fetch_url(crawler: AsyncWebCrawler, url: str) -> tuple:
 
 
 async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
-    """
-    Scrapes a batch of URLs in parallel and returns clean Neo4j-ready dictionaries.
-    """
     docs = []
     print(f"[*] Starting ingestion for {len(urls)} URLs in parallel...")
 
     async with AsyncWebCrawler(verbose=False) as crawler:
-        # Use asyncio.gather to run all URLs at once (fixes Pylance arun_many error)
         tasks = [_fetch_url(crawler, u) for u in urls]
         results = await asyncio.gather(*tasks)
 
@@ -59,31 +124,36 @@ async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
             print(f"[-] Failed to download: {url}")
             continue
 
-        # Extract internal links safely (fixes Pylance list typing error)
+        # Extract internal links WITH their anchor text for the AI Reranker
         raw_links = []
         if isinstance(getattr(res, "links", {}), dict):
             for l in res.links.get("internal", []):
                 if isinstance(l, dict) and isinstance(l.get("href"), str):
-                    raw_links.append(l["href"])
+                    # Save both URL and Text
+                    raw_links.append({"href": l["href"], "text": l.get("text", "")})
 
-        # Clean the text and links
-        cleaned = clean_content(
+        title = getattr(res, "metadata", {}).get("title", "")
+        
+        # 1. Clean the main body text
+        body_text = clean_content(
             html=getattr(res, "html", ""),
-            fallback_markdown=getattr(res, "markdown", ""),
-            links=raw_links
+            fallback_markdown=getattr(res, "markdown", "")
         )
 
-        if len(cleaned["body"]) < 150:
+        if len(body_text) < 150:
             print(f"[-] Skipped (content too short): {url}")
             continue
+
+        # 2. Semantically Rerank and filter the related links
+        top_related_links = smart_rank_links(page_title=title, raw_links=raw_links)
 
         docs.append({
             "document_url": url,
             "domain": urlparse(url).netloc,
-            "body": cleaned["body"],
-            "related_documents": cleaned["related_documents"],
+            "body": body_text,
+            "related_documents": top_related_links,
             "metadata": {
-                "title": getattr(res, "metadata", {}).get("title", "")
+                "title": title
             }
         })
         print(f"[+] Successfully processed: {url}")
@@ -103,10 +173,8 @@ if __name__ == "__main__":
     OUTPUT_DIR = os.path.abspath(os.path.join(os.getcwd(),"data/raw"))
     OUTPUT_FILE = os.path.join(OUTPUT_DIR, "scraped_documents.json")
 
-    # 1. Run the scraper
     results = asyncio.run(ingest_batch(TEST_URLS))
 
-    # 2. Save the results
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)

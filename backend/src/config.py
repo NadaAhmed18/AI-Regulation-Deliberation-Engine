@@ -4,7 +4,7 @@ load_dotenv()
 
 # Embedding Model
 VECTOR_DIMENSION = 1024 # 1024 (default), 256, 512, 2048
-EMBEDDING_MODEL = "voyage-context-4"
+EMBEDDING_MODEL = "voyage-3.5-lite"
 
 # Chunking Parameters
 MAX_CHARS = 12000          # Max characters per chunk (staying safely below model token limits)

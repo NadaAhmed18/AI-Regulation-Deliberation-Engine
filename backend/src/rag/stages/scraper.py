@@ -123,6 +123,21 @@ async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
         if not getattr(res, "success", False):
             print(f"[-] Failed to download: {url}")
             continue
+        
+        
+        # Strict Check for HTTP Error Codes (e.g., 404 Not Found, 403 Forbidden)
+        status_code = getattr(res, "status_code", 200)
+        if status_code and status_code >= 400:
+            print(f"[-] Skipped (HTTP {status_code} Error): {url}")
+            continue
+        
+        # Strict Check for 404 page titles (Sometimes status_code is 200 but it's actually a 404 page)
+        title = getattr(res, "metadata", {}).get("title", "")
+        bad_titles = ["404", "not found", "page not found", "error", "access denied", "forbidden"]
+        # Only check short titles to avoid accidentally blocking an article named "The 404 Error in Policy"
+        if title and len(title) < 40 and any(bad in title.lower() for bad in bad_titles):
+            print(f"[-] Skipped (404/Error Page Detected via Title '{title}'): {url}")
+            continue
 
         # Extract internal links WITH their anchor text for the AI Reranker
         raw_links = []

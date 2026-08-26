@@ -1,86 +1,87 @@
 import json
-import os
+import hashlib
 from typing import List, Dict, Any
 
 from src.clients.neo4j import Neo4jClient
 from src.utils.embedder import Embedder
-from config import EMBEDDING_MODEL
+from src.config import EMBEDDING_MODEL
 
-def ingest_documents(documents: List[Dict[str, Any]], model_type: str = "voyage"):
+def generate_chunk_id(url: str, chunk_index: int) -> str:
+    """Creates a unique deterministic ID for each chunk."""
+    unique_string = f"{url}_chunk_{chunk_index}"
+    return hashlib.md5(unique_string.encode('utf-8')).hexdigest()
+
+def ingest_documents(documents: List[Dict[str, Any]]):
     """
-    Takes a list of document dictionaries, generates embeddings for their bodies,
-    and stores them in the Neo4j database.
+    Takes scraped documents, chunks them, embeds the chunks, 
+    and saves the Document->Chunk graph into Neo4j.
     """
     if not documents:
-        print("No documents to ingest.")
+        print("[-] No documents to ingest.")
         return
 
-    print(f"[*] Starting ingestion for {len(documents)} documents...")
-
+    print(f"\n[*] Starting ingestion for {len(documents)} documents...")
+    
     # 1. Initialize Clients
     db_client = Neo4jClient()
-    embedder = Embedder(model_name=EMBEDDING_MODEL, model_type=model_type)
-
-    # 2. Setup Database Schema and Vector Index
-    print("[*] Ensuring database constraints and indexes are set...")
     db_client.setup_database()
     db_client.setup_vector_index()
-
-    # 3. Generate Embeddings
-    print(f"[*] Generating embeddings using {EMBEDDING_MODEL}...")
-    bodies = [doc["body"] for doc in documents]
-    embeddings_array = embedder.embed(bodies, is_query=False)
     
-    # Convert numpy array back to standard Python lists for Neo4j
-    embeddings_list = embeddings_array.tolist()
-
-    # 4. Prepare data for Neo4j batch insertion
-    print("[*] Preparing data for Neo4j...")
-    batch_data = []
-    for doc, emb in zip(documents, embeddings_list):
-        batch_data.append({
-            "document_url": doc["document_url"],
+    embedder = Embedder(model_name=EMBEDDING_MODEL)
+    
+    neo4j_batch = []
+    print("[*] Chunking and Embedding documents...")
+    
+    for doc in documents:
+        url = doc["document_url"]
+        
+        # Chunk text
+        chunks_text = embedder.chunk_text(doc["body"])
+        if not chunks_text:
+            continue
+            
+        # Embed all chunks for this document
+        chunk_embeddings = embedder.embed(chunks_text, is_query=False).tolist()
+        
+        # Package chunks with deterministic IDs
+        doc_chunks = []
+        for i, (text, emb) in enumerate(zip(chunks_text, chunk_embeddings)):
+            doc_chunks.append({
+                "chunk_id": generate_chunk_id(url, i),
+                "text": text,
+                "embedding": emb,
+                "chunk_index": i
+            })
+            
+        neo4j_batch.append({
+            "url": url,
             "domain": doc["domain"],
-            "body": doc["body"],
-            "related_documents": doc.get("related_documents", []),
-            # Neo4j cannot store nested dictionaries, so we serialize metadata to a JSON string
             "metadata": json.dumps(doc.get("metadata", {}), ensure_ascii=False),
-            "embedding": emb
+            "related_documents": doc.get("related_documents", []),
+            "chunks": doc_chunks
         })
+        print(f"  -> Generated {len(doc_chunks)} chunks for {doc['domain']}")
 
-    # 5. Execute Batch Cypher Query
-    # We use UNWIND for massive performance gains (writes all docs in 1 database call)
-    # MERGE ensures we don't create duplicates if the URL already exists
+    # 2. Highly optimized Cypher query
     cypher_query = """
-    UNWIND $batch AS doc
-    MERGE (d:Document {document_url: doc.document_url})
-    SET d.domain = doc.domain,
-        d.body = doc.body,
-        d.related_documents = doc.related_documents,
-        d.metadata = doc.metadata,
-        d.embedding = doc.embedding
+    UNWIND $batch AS item
+    MERGE (d:Document {document_url: item.url})
+    SET d.domain = item.domain,
+        d.metadata = item.metadata,
+        d.related_documents = item.related_documents
+    
+    WITH d, item
+    UNWIND item.chunks AS chunk_data
+    MERGE (c:Chunk {chunk_id: chunk_data.chunk_id})
+    SET c.text = chunk_data.text,
+        c.embedding = chunk_data.embedding,
+        c.chunk_index = chunk_data.chunk_index
+        
+    MERGE (d)-[:HAS_CHUNK]->(c)
     """
     
-    print("[*] Writing to Neo4j...")
-    db_client.execute_query(cypher_query, parameters={"batch": batch_data})
+    print("[*] Writing to Neo4j Graph Database...")
+    db_client.execute_query(cypher_query, parameters={"batch": neo4j_batch})
+    # db_client.close()
     
-    db_client.close()
-    print(f"[+] Successfully ingested {len(batch_data)} documents into Neo4j!")
-
-
-# ==========================================
-# Testing / Execution Block
-# ==========================================
-if __name__ == "__main__":
-    # Load the JSON file created by scraper.py
-    data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../data/raw"))
-    file_path = os.path.join(data_dir, "scraped_documents.json")
-    
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            scraped_docs = json.load(f)
-            
-        # You can change model_type to "hf" if you want to use local models
-        ingest_documents(scraped_docs, model_type="voyage")
-    else:
-        print(f"[-] Could not find {file_path}. Please run scraper.py first.")
+    print(f"[+] Successfully ingested {len(neo4j_batch)} documents with their chunks into Neo4j!")

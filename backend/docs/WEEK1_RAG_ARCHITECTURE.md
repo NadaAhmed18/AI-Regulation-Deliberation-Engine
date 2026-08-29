@@ -48,25 +48,34 @@ NEO4J_PASSWORD=password123
 
 ---
 
-## 3. Running the Pipeline & Reproducing the Database
+## 3. Importing the Pre-Built Database (For Reviewers)
 
-**Note for Reviewers:** To avoid version-incompatibility issues with `.dump` files across different Neo4j editions (Community vs. Enterprise), we have provided a pre-scraped, cleaned JSON dataset containing over 50 policy documents.
+To ensure 100% compatibility across all Neo4j versions (Community vs. Enterprise) and to avoid Docker permission issues with binary `.dump` files, we have exported the fully embedded vector database into a JSON format.
 
-To build the database fresh on your local machine, ensure Neo4j is running and execute:
+You **do not** need an active Voyage API key to load this data, as the embeddings are already computed and saved.
+
+Ensure your Neo4j database is running (it is safe to run this on an empty or partially filled database), and execute this command from the `backend/` folder:
 
 ```bash
-python -m src.rag.stages.ingestion --file data/seed_documents.json
+python -m scripts.import_db_from_json
 ```
 
-_This command reads the cleaned documents, chunks them, calls the Voyage API for embeddings, and inserts them directly into your local Neo4j instance._
-
-### Design Decision: Chunk Limits & Quota
-
-_Note: In `src/config.py`, we have set `MAX_CHUNKS = 2` (or a similarly low threshold). This was a deliberate architectural decision to protect limited embedding API quotas while still ensuring every document has its core introduction/summary embedded into the database._
+*This script will instantly rebuild the Graph relationships and the Vector Index locally in seconds. It uses Cypher `MERGE` commands, so running it multiple times will safely overwrite data without creating duplicates.*
 
 ---
 
-## 4. Retrieval & Evaluation
+## 4. Running the Ingestion Pipeline from Scratch (Optional)
+
+If you wish to build the database from scratch by scraping the live URLs:
+
+```bash
+python -m src.rag.main --links-file data/seed_links.txt
+```
+*Note: We have set `MAX_CHUNKS = 2` (or a similarly low threshold) in `src/config.py`. This is a deliberate architectural decision to protect limited embedding API quotas while still ensuring every document has its core introduction/summary embedded into the database.*
+
+---
+
+## 5. Retrieval & Evaluation
 
 To ensure this pipeline provides robust knowledge to Week 2 agents, we built a quantitative evaluation suite.
 
@@ -91,10 +100,10 @@ The script executes vector-graph searches and retrieves the top 3 results. It ca
 
 **Average System Precision:** **0.93**
 
-_(Files `evaluation_results.md` and `retrieved_results.json` are automatically generated in the evaluation directory to prove reproducibility)._
+*(Files `evaluation_results.md` and `retrieved_results.json` are automatically generated in the evaluation directory to prove reproducibility).*
 
 ---
 
-## 5. Handoff to Week 2 (LLM Tool Interface)
+## 6. Handoff to Week 2 (LLM Tool Interface)
 
 The `src.agent.tools.retriever` module exposes the `search_ai_policy()` function. This is formatted specifically with strict type-hints, string-returns, and an OpenAI-compatible JSON schema so Week 2 LLM agents can call it directly as a ReAct function tool.

@@ -11,21 +11,18 @@ Covers the validation contract of `load_persona()`:
     - A nonexistent file raises FileNotFoundError.
 
 Plain `assert`-based `test_*` functions: discoverable by `pytest`, and also
-runnable standalone with no extra dependency via:
+runnable standalone with no extra dependency. Run as a module from the
+`backend/` root — relative imports work natively, no `sys.path` hacks needed:
 
     python -m tests.test_yaml_loader
 """
 
-import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from src.utils.yaml_loader import load_persona
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-VALID_PERSONA_PATH = BACKEND_ROOT / "personas" / "persona_a.yaml"
+VALID_PERSONA_PATH = Path("personas/persona_a.yaml")
 
 
 def _write_temp_yaml(content: str) -> Path:
@@ -142,7 +139,7 @@ def test_invalid_yaml_syntax_raises_value_error():
 def test_nonexistent_file_raises_file_not_found_error():
     raised = False
     try:
-        load_persona(BACKEND_ROOT / "personas" / "does_not_exist.yaml")
+        load_persona(Path("personas/does_not_exist.yaml"))
     except FileNotFoundError:
         raised = True
     assert raised, "Expected FileNotFoundError for a nonexistent persona file."

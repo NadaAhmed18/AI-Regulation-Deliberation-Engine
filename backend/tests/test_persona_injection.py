@@ -7,7 +7,7 @@ What this proves:
        persona dict into a single system prompt, and the persona's identity
        fields actually show up in it.
     3. `render_initial_opinion_prompt()` injects the identity reminder, the
-       dummy retrieved context, and the dummy memory into
+       sample retrieved context, and the sample memory into
        `prompts/initial_opinion.txt` with no KeyError / formatting errors,
        and no leftover unrendered `{placeholder}` text.
     4. Two different personas produce two different system prompts AND two
@@ -16,25 +16,22 @@ What this proves:
 
 These are plain `assert`-based functions named `test_*`, so this file is
 directly discoverable by `pytest` if/when the project adopts it, while
-still being runnable standalone (no extra dependency required) via:
+still being runnable standalone (no extra dependency required).
+
+Run as a module from the `backend/` root — this project relies on native
+relative imports rather than any `sys.path` manipulation:
 
     python -m tests.test_persona_injection
 """
 
-import sys
 from pathlib import Path
-
-# Allow running this file directly (`python tests/test_persona_injection.py`)
-# as well as as a module (`python -m tests.test_persona_injection`).
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.utils.yaml_loader import load_persona
 from src.utils.prompt_builder import build_system_prompt, render_initial_opinion_prompt
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-PERSONAS_DIR = BACKEND_ROOT / "personas"
+PERSONAS_DIR = Path("personas")
 
-DUMMY_RETRIEVED_CONTEXT = (
+sample_retrieved_context = (
     "--- SOURCE 1 ---\n"
     "Domain: eu-ai-act\n"
     "URL: https://eur-lex.europa.eu/eli/reg/2024/1689/oj?locale=en\n"
@@ -45,13 +42,13 @@ DUMMY_RETRIEVED_CONTEXT = (
     "and conformity assessment before being placed on the market.\n"
 )
 
-DUMMY_MEMORY_SUMMARY = (
+sample_memory_summary = (
     "In a prior round, this stakeholder raised concerns about the cost of "
     "conformity assessments for smaller organizations and asked for "
     "clarification on how 'high-risk' is classified."
 )
 
-DUMMY_TOPIC = "Should Region X adopt an EU-style, risk-based AI regulatory framework?"
+sample_topic = "Should Region X adopt an EU-style, risk-based AI regulatory framework?"
 
 # Any of these left unrendered in the output means the template.format()
 # call silently dropped a value instead of substituting it.
@@ -71,9 +68,9 @@ def _render_case(persona_filename: str) -> tuple[dict, str, str]:
     system_prompt = build_system_prompt(persona)
     rendered_prompt = render_initial_opinion_prompt(
         persona=persona,
-        retrieved_context=DUMMY_RETRIEVED_CONTEXT,
-        memory_summary=DUMMY_MEMORY_SUMMARY,
-        topic=DUMMY_TOPIC,
+        retrieved_context=sample_retrieved_context,
+        memory_summary=sample_memory_summary,
+        topic=sample_topic,
     )
     return persona, system_prompt, rendered_prompt
 
@@ -95,9 +92,9 @@ def test_persona_b_system_prompt_contains_identity():
 def test_rendered_prompt_contains_injected_values():
     persona, _, rendered = _render_case("persona_a.yaml")
     assert persona["name"] in rendered
-    assert DUMMY_RETRIEVED_CONTEXT in rendered
-    assert DUMMY_MEMORY_SUMMARY in rendered
-    assert DUMMY_TOPIC in rendered
+    assert sample_retrieved_context in rendered
+    assert sample_memory_summary in rendered
+    assert sample_topic in rendered
 
 
 def test_rendered_prompt_has_no_leftover_placeholders():

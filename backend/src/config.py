@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,3 +15,9 @@ SLIDING_SENTENCES = 2      # Overlap chunks by this many sentences to preserve c
 
 # Link Reranking Parameters
 MAX_RELATED_LINKS = 20  # Only keep the top X most relevant links per document
+
+# Prompt Template Paths
+# Relative to the working directory. Scripts should always be run as
+# modules from the `backend/` root (e.g. `python -m src.utils.prompt_builder`),
+# so this resolves natively without any sys.path or __file__ manipulation.
+DEFAULT_TEMPLATE_PATH = Path("prompts/initial_opinion.txt")

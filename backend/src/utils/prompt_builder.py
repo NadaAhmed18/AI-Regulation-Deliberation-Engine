@@ -39,14 +39,20 @@ Both functions only need a persona dict (as returned by
 `src.utils.yaml_loader.load_persona`) — they do not care whether that dict
 came from a static YAML file or was generated on-the-fly, which is what
 keeps this reusable once dynamic persona generation is added.
+
+Path handling:
+    This module has no path constants of its own. It relies on
+    `DEFAULT_TEMPLATE_PATH` from `src/config.py` (the project's single,
+    central place for file paths), and on all scripts being run as modules
+    from the `backend/` root (e.g. `python -m src.utils.prompt_builder`),
+    so relative paths resolve natively without any `sys.path` or
+    `__file__`-based manipulation.
 """
 
 from pathlib import Path
 from typing import Any, Union
 
-# Directory containing this file: backend/src/utils/ -> backend/
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TEMPLATE_PATH = BACKEND_ROOT / "prompts" / "initial_opinion.txt"
+from src.config import DEFAULT_TEMPLATE_PATH
 
 GENERAL_SIMULATION_RULES = """\
 You are an AI stakeholder participating in a structured multi-agent

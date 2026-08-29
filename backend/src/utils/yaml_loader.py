@@ -144,9 +144,9 @@ def _validate_optional_list_fields(data: dict[str, Any], path: Path) -> None:
 
 if __name__ == "__main__":
     # Smoke test: load both bundled example personas and print them.
+    # Run as: python -m src.utils.yaml_loader   (from the backend/ root)
     for name in ("persona_a.yaml", "persona_b.yaml"):
-        persona_path = Path(__file__).resolve().parents[2] / "personas" / name
-        persona = load_persona(persona_path)
+        persona = load_persona(Path("personas") / name)
         print(f"--- Loaded {name} ---")
         print(f"Name:       {persona['name']}")
         print(f"Stance:     {persona['stance'][:80]}...")

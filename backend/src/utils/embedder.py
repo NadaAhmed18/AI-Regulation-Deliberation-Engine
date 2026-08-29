@@ -128,18 +128,14 @@ class Embedder:
         
         for i in range(0, len(texts), 64):
             batch = texts[i : i + 64]
-            try:
-                result = self.client.embed(
-                    texts=batch,
-                    model=self.model_name,
-                    input_type=input_type,
-                    output_dimension=VECTOR_DIMENSION,
-                    output_dtype="float"
-                )
-                embeddings.extend(result.embeddings)
-            except Exception as e:
-                print(f"[-] Voyage API Error: {e}")
-                embeddings.extend([[0.0] * VECTOR_DIMENSION] * len(batch))
+            result = self.client.embed(
+                texts=batch,
+                model=self.model_name,
+                input_type=input_type,
+                output_dimension=VECTOR_DIMENSION,
+                output_dtype="float"
+            )
+            embeddings.extend(result.embeddings)
                 
         emb_array = np.array(embeddings, dtype=np.float32)
         

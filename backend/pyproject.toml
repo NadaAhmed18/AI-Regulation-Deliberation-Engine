@@ -13,6 +13,7 @@ dependencies = [
     "flashrank>=0.2.10",
     "neo4j>=6.2.0",
     "pyyaml>=6.0.3",
+    "requests>=2.34.2",
     "sentence-transformers>=6.0.0",
     "torch>=2.13.0",
     "trafilatura>=2.2.0",

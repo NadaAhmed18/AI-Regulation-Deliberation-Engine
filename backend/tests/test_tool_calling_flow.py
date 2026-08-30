@@ -39,7 +39,7 @@ Run as a module from the `backend/` root:
     python -m tests.test_tool_calling_flow
 """
 
-from src.tools import execute_tool, get_all_tool_schemas
+from src.tools import execute_tool, get_tool_schemas, get_tool_schemas_for_role
 
 
 def _mock_llm_tool_call_response() -> dict:
@@ -57,7 +57,7 @@ def _mock_llm_tool_call_response() -> dict:
     Simulates the LLM deciding to call `search_web` because Tavily isn't
     configured in this test environment, so the round trip can be verified
     without any live network dependency (`search_web` degrades gracefully
-    to a plain string either way — see `src/tools.py`).
+    to a plain string either way — see `src/agent/tools/web_search.py`).
     """
     return {
         "type": "tool_call",
@@ -68,7 +68,7 @@ def _mock_llm_tool_call_response() -> dict:
 
 
 def test_tool_schemas_are_available_for_the_llm_call():
-    schemas = get_all_tool_schemas()
+    schemas = get_tool_schemas()
     tool_names = {schema["function"]["name"] for schema in schemas}
     assert "search_ai_policy" in tool_names
     assert "search_web" in tool_names
@@ -79,6 +79,37 @@ def test_tool_schemas_are_available_for_the_llm_call():
         assert "name" in schema["function"]
         assert "description" in schema["function"]
         assert "parameters" in schema["function"]
+
+
+def test_role_based_filtering_hides_tools_from_the_moderator():
+    """The Week 3 Moderator/Orchestrator agent must not be offered any
+    tool — it only manages the debate's turn order."""
+    moderator_schemas = get_tool_schemas_for_role("moderator")
+    assert moderator_schemas == []
+
+
+def test_role_based_filtering_gives_stakeholders_both_tools():
+    stakeholder_schemas = get_tool_schemas_for_role("stakeholder")
+    tool_names = {schema["function"]["name"] for schema in stakeholder_schemas}
+    assert tool_names == {"search_ai_policy", "search_web"}
+
+
+def test_unknown_role_raises_value_error():
+    raised = False
+    try:
+        get_tool_schemas_for_role("villain")
+    except ValueError as e:
+        raised = True
+        assert "villain" in str(e)
+    assert raised, "Expected ValueError for an unrecognized role."
+
+
+def test_execute_tool_blocks_disallowed_tool_even_if_llm_calls_it():
+    """Defense in depth: even if a moderator's LLM hallucinates a
+    tool_call for a tool it was never shown, execute_tool must refuse it
+    when given that agent's allowed_tools — not just the schema filter."""
+    observation = execute_tool("search_web", {"query": "test"}, allowed_tools=[])
+    assert "not permitted" in observation
 
 
 def test_tool_call_round_trip_produces_valid_messages():
@@ -147,6 +178,10 @@ def test_round_trip_survives_an_unregistered_tool_name():
 def _run_all_tests():
     tests = [
         test_tool_schemas_are_available_for_the_llm_call,
+        test_role_based_filtering_hides_tools_from_the_moderator,
+        test_role_based_filtering_gives_stakeholders_both_tools,
+        test_unknown_role_raises_value_error,
+        test_execute_tool_blocks_disallowed_tool_even_if_llm_calls_it,
         test_tool_call_round_trip_produces_valid_messages,
         test_round_trip_survives_an_unregistered_tool_name,
     ]

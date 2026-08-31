@@ -21,3 +21,7 @@ MAX_RELATED_LINKS = 20  # Only keep the top X most relevant links per document
 # modules from the `backend/` root (e.g. `python -m src.utils.prompt_builder`),
 # so this resolves natively without any sys.path or __file__ manipulation.
 DEFAULT_TEMPLATE_PATH = Path("prompts/initial_opinion.txt")
+
+PERSONAS_DIR = Path("personas")
+OUTPUT_DIR = Path("outputs")
+OUTPUT_FILE = Path(OUTPUT_DIR / "initial_opinions.json")

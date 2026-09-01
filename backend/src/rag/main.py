@@ -8,7 +8,7 @@ import os
 from src.rag.stages.scraper import ingest_batch
 from src.rag.stages.ingestion import ingest_documents
 
-async def run_from_urls(urls: list, batch_size: int = 10):
+async def run_from_urls(urls: list, batch_size: int = 10, save_html: bool = False):
     """
     Runs the scraper first, then passes data to the pipeline.
     Processes URLs in batches to prevent rate limits or memory overload.
@@ -22,7 +22,8 @@ async def run_from_urls(urls: list, batch_size: int = 10):
         batch = urls[i:i + batch_size]
         print(f"\n[>>>] Processing Batch {i//batch_size + 1}/{(len(urls) + batch_size - 1)//batch_size} ({len(batch)} URLs)...")
         
-        scraped_docs = await ingest_batch(batch)
+        # Pass the save_html flag down to the scraper
+        scraped_docs = await ingest_batch(batch, save_html=save_html)
         if scraped_docs:
             all_scraped_docs.extend(scraped_docs)
             
@@ -35,7 +36,7 @@ async def run_from_urls(urls: list, batch_size: int = 10):
     print(f"\n[+] Finished entirely! Total documents processed and saved: {len(all_scraped_docs)}")
 
 
-def run_from_links_file(filepath: str):
+def run_from_links_file(filepath: str, save_html: bool = False):
     """Reads a text file of URLs, ignoring comments and empty lines."""
     filepath = os.path.join(os.getcwd(), filepath)
     print(f"\n[*] Reading URLs from {filepath}...")
@@ -56,7 +57,7 @@ def run_from_links_file(filepath: str):
         return
         
     print(f"[*] Found {len(urls)} valid URLs.")
-    asyncio.run(run_from_urls(urls))
+    asyncio.run(run_from_urls(urls, save_html=save_html))
 
 
 if __name__ == "__main__":
@@ -65,10 +66,11 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--url", type=str, help="A single URL to scrape and ingest")
     group.add_argument("--links-file", type=str, help="Path to a TXT file containing a list of URLs")
+    parser.add_argument("--save-html", action="store_true", help="Save raw HTML files to data/raw/ directory for reviewer verification.")
     
     args = parser.parse_args()
 
     if args.url:
-        asyncio.run(run_from_urls([args.url]))
+        asyncio.run(run_from_urls([args.url], save_html=args.save_html))
     elif args.links_file:
-        run_from_links_file(args.links_file)
+        run_from_links_file(args.links_file, save_html=args.save_html)

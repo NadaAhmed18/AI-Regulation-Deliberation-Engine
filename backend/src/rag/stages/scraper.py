@@ -1,6 +1,7 @@
 # python -m src.rag.stages.scraper
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -111,7 +112,7 @@ async def _fetch_url(crawler: AsyncWebCrawler, url: str) -> tuple:
     return url, result
 
 
-async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
+async def ingest_batch(urls: List[str], save_html: bool = True) -> List[Dict[str, Any]]:
     docs = []
     print(f"[*] Starting ingestion for {len(urls)} URLs in parallel...")
 
@@ -139,6 +140,22 @@ async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
             print(f"[-] Skipped (404/Error Page Detected via Title '{title}'): {url}")
             continue
 
+        raw_html = getattr(res, "html", "")
+        domain = urlparse(url).netloc
+
+        if save_html and raw_html:
+            # Create a safe, unique filename using the domain and a short hash of the URL
+            url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()[:8]
+            safe_filename = f"{domain}_{url_hash}.html"
+            
+            raw_dir = os.path.abspath(os.path.join(os.getcwd(), "data/raw"))
+            os.makedirs(raw_dir, exist_ok=True)
+            
+            file_path = os.path.join(raw_dir, safe_filename)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(raw_html)
+            print(f"  [>] Saved raw HTML to: data/raw/{safe_filename}")
+
         # Extract internal links WITH their anchor text for the AI Reranker
         raw_links = []
         if isinstance(getattr(res, "links", {}), dict):
@@ -147,11 +164,9 @@ async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
                     # Save both URL and Text
                     raw_links.append({"href": l["href"], "text": l.get("text", "")})
 
-        title = getattr(res, "metadata", {}).get("title", "")
-        
         # 1. Clean the main body text
         body_text = clean_content(
-            html=getattr(res, "html", ""),
+            html=raw_html,
             fallback_markdown=getattr(res, "markdown", "")
         )
 
@@ -164,7 +179,7 @@ async def ingest_batch(urls: List[str]) -> List[Dict[str, Any]]:
 
         docs.append({
             "document_url": url,
-            "domain": urlparse(url).netloc,
+            "domain": domain,
             "body": body_text,
             "related_documents": top_related_links,
             "metadata": {

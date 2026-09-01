@@ -221,3 +221,6 @@ __marimo__/
 
 #secertconfig
 secretconfig.py
+
+#other
+data/raw/*.html

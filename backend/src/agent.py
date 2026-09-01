@@ -1,6 +1,6 @@
 import argparse
 
-from src.agent.simulation_runner import generate_all_opinions
+from src.agent.utils.simulation_runner import generate_all_opinions
 
 
 def main():

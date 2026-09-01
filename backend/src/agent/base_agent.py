@@ -38,7 +38,6 @@ class BaseAgent:
     def run_react_loop(self, user_prompt: str, max_steps: int = 5, save_to_memory: bool = True) -> str:
         history = self.memory.get_history(agent_name=self.name, limit=10)
 
-        # FIX: Explicitly type-hint 'messages' so Pylance knows it will hold None and Lists later, not just Strings.
         messages: List[Dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_prompt})
@@ -74,7 +73,6 @@ class BaseAgent:
                         meta={"tool_name": tool_name, "arguments": arguments},
                     )
 
-                # Pylance is happy here now because `messages` allows Any value type
                 messages.append(
                     {
                         "role": "assistant",

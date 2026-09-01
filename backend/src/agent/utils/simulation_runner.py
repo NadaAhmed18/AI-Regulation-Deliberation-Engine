@@ -1,3 +1,5 @@
+# python -m src.agent.utils.simulation_runner --generate-initial-opinions
+import argparse
 import json
 from src.agent.base_agent import BaseAgent
 from src.config import PERSONAS_DIR, OUTPUT_DIR, OUTPUT_FILE
@@ -37,3 +39,24 @@ def generate_all_opinions(topic: str) -> list[dict]:
     print(f"\nSaved results to: {OUTPUT_FILE}")
 
     return opinions
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Week 2 AI Regulation Stakeholder Simulation"
+    )
+
+    parser.add_argument(
+        "--generate-initial-opinions",
+        action="store_true",
+        help="Generate initial RAG-grounded opinions for all personas.",
+    )
+
+    args = parser.parse_args()
+
+    if args.generate_initial_opinions:
+        topic = "Classifying Open Source Models under the EU AI Act"
+
+        generate_all_opinions(topic)
+    else:
+        parser.print_help()

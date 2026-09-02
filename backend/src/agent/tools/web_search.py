@@ -3,8 +3,8 @@ LIVE WEB SEARCH TOOL (PURE FUNCTION)
 
 Provides agents with real-time internet search capability via the Tavily
 API. This module owns the tool's implementation and schema exclusively;
-`src/tools.py` only imports and registers them — it does not host any
-tool logic itself.
+`src/agent/tools/tool_registry.py` only imports and registers them — it
+does not host any tool logic itself.
 """
 
 import os
@@ -13,9 +13,9 @@ import requests
 from dotenv import load_dotenv
 
 # Explicit here so this module works correctly whether it's imported via
-# the registry (src/tools.py) or run/imported standalone — it should not
-# depend on another module having already called load_dotenv() first.
-# Safe to call more than once.
+# the registry (src/agent/tools/tool_registry.py) or run/imported
+# standalone — it should not depend on another module having already
+# called load_dotenv() first. Safe to call more than once.
 load_dotenv()
 
 TAVILY_API_URL = "https://api.tavily.com/search"

@@ -116,7 +116,7 @@ def execute_tool(tool_name: str, arguments: dict, allowed_tools: Optional[list[s
 
 
 if __name__ == "__main__":
-    # Run as: python -m src.tools
+    # Run as: python -m src.agent.tools.tool_registry
     print("--- All tool schemas ---")
     for schema in get_tool_schemas():
         print(f"- {schema['function']['name']}: {schema['function']['description']}")

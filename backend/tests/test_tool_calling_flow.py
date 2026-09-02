@@ -23,23 +23,22 @@ What this proves:
         (loop continues so the LLM can read the observation)
 
 What this does NOT prove:
-    This does not exercise a real LLM or the real `BaseAgent` — both
-    `src/clients/llm_client.py` and `src/agent/base_agent.py` are still
-    spec-only stubs owned by a separate ticket at the time this test was
-    written. Instead of waiting on that integration to verify this
-    module's contract, a mocked LLM response (in the exact dict shape
-    `LLMClient.generate_response()` is specified to return) stands in for
-    step 1 above. Once `BaseAgent` is implemented, this test's mock can be
-    swapped for a real `LLMClient` call with no change to the assertions
-    below, since they only depend on the message-shape contract, not on
-    how the tool_call was produced.
+    This does not exercise a real LLM. `src/agent/base_agent.py` and
+    `src/clients/llm_client.py` are now implemented (they were still
+    spec-only stubs when this test was first written), but calling them
+    for real here would require a live `OPENROUTER_API_KEY` and network
+    access, which this test suite does not assume. A mocked LLM response
+    (in the exact dict shape `LLMClient.generate_response()` actually
+    returns) stands in for step 1 above, so this test's assertions verify
+    the message-shape contract between `execute_tool()` and
+    `run_react_loop()` without needing a live LLM call.
 
 Run as a module from the `backend/` root:
 
     python -m tests.test_tool_calling_flow
 """
 
-from src.tools import execute_tool, get_tool_schemas, get_tool_schemas_for_role
+from src.agent.tools.tool_registry import execute_tool, get_tool_schemas, get_tool_schemas_for_role
 
 
 def _mock_llm_tool_call_response() -> dict:

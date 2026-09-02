@@ -6,14 +6,14 @@ Tool logic and tool registration are separated:
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Registry / dispatcher | `src/tools.py` | Aggregates tool schemas and functions; resolves agent roles to allowed tools; dispatches `execute_tool()` calls. Contains no tool logic itself. |
+| Registry / dispatcher | `src/agent/tools/tool_registry.py` | Aggregates tool schemas and functions; resolves agent roles to allowed tools; dispatches `execute_tool()` calls. Contains no tool logic itself. |
 | Knowledge base tool | `src/agent/tools/retriever.py` | `search_ai_policy` — Neo4j vector search over the knowledge base, and its schema `RETRIEVER_TOOL_SCHEMA`. |
 | Web search tool | `src/agent/tools/web_search.py` | `search_web` — live web search via the Tavily API, and its schema `WEB_SEARCH_TOOL_SCHEMA`. |
 
 An agent's ReAct loop uses the registry as its only entry point:
 
 ```python
-from src.tools import get_tool_schemas_for_role, execute_tool
+from src.agent.tools.tool_registry import get_tool_schemas_for_role, execute_tool
 
 tools_schema = get_tool_schemas_for_role(role)   # passed to LLMClient.generate_response(tools=...)
 ...
@@ -45,7 +45,7 @@ participating in a debate has access to both tools; a moderator/
 orchestrator agent that manages turn order and debate structure has
 access to neither.
 
-`ROLE_TOOL_PERMISSIONS` in `src/tools.py` declares this mapping:
+`ROLE_TOOL_PERMISSIONS` in `src/agent/tools/tool_registry.py` declares this mapping:
 
 ```python
 ROLE_TOOL_PERMISSIONS = {
@@ -71,8 +71,9 @@ nothing else in the registry changes.
 
 Defined in `src/agent/tools/retriever.py`: `search_ai_policy(query, top_k) -> str`
 runs a vector search over the Neo4j knowledge base and returns matching
-chunks as formatted text, alongside `RETRIEVER_TOOL_SCHEMA`. `src/tools.py`
-imports both and registers them without any additional logic.
+chunks as formatted text, alongside `RETRIEVER_TOOL_SCHEMA`.
+`src/agent/tools/tool_registry.py` imports both and registers them
+without any additional logic.
 
 ## 4. Web Search Tool (`search_web`)
 
@@ -119,28 +120,33 @@ TAVILY_API_KEY=your_tavily_api_key_here
 Get a key at [tavily.com](https://tavily.com). If unset, `search_web`
 reports itself unavailable rather than failing the agent (see Section 4).
 
-## 6. Scope
+## 6. Integration with the Agent
 
-`src/agent/base_agent.py` (the ReAct loop) and `src/clients/llm_client.py`
-(the LLM call) are owned by a separate component. `src/tools.py` and its
-tool modules provide the schema registry and dispatcher that component
-depends on; they do not implement the loop itself.
-`tests/test_tool_calling_flow.py` verifies the contract between them
-using a mocked LLM tool-call response in the shape `LLMClient` is
-specified to produce.
+`src/agent/base_agent.py`'s `BaseAgent` is the consumer of this registry:
+it calls `get_tool_schemas_for_role("stakeholder")` at construction time to
+build the schema list passed to `LLMClient`, and calls `execute_tool(...,
+allowed_tools=self.allowed_tool_names)` inside `run_react_loop()` whenever
+the LLM's response is a tool call. `src/clients/llm_client.py`'s `LLMClient`
+is the component that actually calls the model (via OpenRouter or a local
+HuggingFace model) and normalizes its response into the
+`{"type": "text" | "tool_call", ...}` shape this registry's callers expect.
+
+`tests/test_tool_calling_flow.py` verifies the contract between the
+registry and that message shape using a mocked LLM tool-call response,
+independent of a live model call.
 
 ## 7. Testing
 
 ```bash
 cd backend
-python -m src.tools
+python -m src.agent.tools.tool_registry
 python -m src.agent.tools.web_search
 python -m tests.test_tool_calling_flow
 ```
 
-`python -m src.tools` prints all registered schemas, the schemas for each
-role, and exercises `execute_tool` (including a disallowed-tool case and
-an unregistered-tool case).
+`python -m src.agent.tools.tool_registry` prints all registered schemas,
+the schemas for each role, and exercises `execute_tool` (including a
+disallowed-tool case and an unregistered-tool case).
 
 `python -m src.agent.tools.web_search` runs `search_web` standalone.
 

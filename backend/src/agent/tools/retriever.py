@@ -39,15 +39,31 @@ RETRIEVER_TOOL_SCHEMA = {
 # 3. Tool Function Implementation
 # ------------------------------------------------------------------------------
 def search_ai_policy(query: str, top_k: int = 3) -> str:
-    """
-    Executes a vector search against the Neo4j database and returns formatted text.
-    """
+    """Executes a vector search against Neo4j. Fails loudly if DB is down."""
     print(f"\n[Agent Tool] 🔍 Searching knowledge base for: '{query}'")
     
-    # 1. Convert LLM's text query into a vector
-    query_embedding = embedder.embed([query], is_query=True)[0].tolist()
+    # 1. Connection Check
+    try:
+        # Quick ping to check if Neo4j is alive
+        db.execute_query("RETURN 1 AS ping")
+    except Exception as e:
+        error_msg = (
+            f"\n❌ [CRITICAL ERROR] Cannot connect to Neo4j! Is the database running?\n"
+            f"Details: {e}\n"
+            f"👉 Run 'python -m src.scripts.import_db_from_json' after starting Neo4j."
+        )
+        print(error_msg)
+        # Raise instead of silently hiding so the developer knows immediately
+        raise ConnectionError(error_msg)
 
-    # 2. Query Neo4j
+    # 2. Convert text to vector
+    try:
+        query_embedding = embedder.embed([query], is_query=True)[0].tolist()
+    except Exception as e:
+        print(f"\n❌ [ERROR] Embedding generation failed: {e}")
+        raise RuntimeError(f"Embedding failed. Check VOYAGE_API_KEY: {e}")
+
+    # 3. Query Neo4j
     cypher_query = """
     CALL db.index.vector.queryNodes($index_name, $top_k, $query_embedding)
     YIELD node AS chunk, score
@@ -68,8 +84,9 @@ def search_ai_policy(query: str, top_k: int = 3) -> str:
 
     results = db.execute_query(cypher_query, parameters)
     
-    # 3. Format output specifically for an LLM to read easily
+    # 4. Format output specifically for an LLM to read easily
     if not results:
+        print(f"⚠️ [WARNING] Neo4j returned 0 results for query: '{query}'. Did you populate the DB?")
         return "No relevant information found in the database for this query."
         
     llm_formatted_response = "Here is the retrieved context from the database:\n\n"

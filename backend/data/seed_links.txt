@@ -1,5 +1,6 @@
 # --- SECTION 1: EU AI Act & European Perspectives (Pro-Regulation) ---
 https://en.wikipedia.org/wiki/Artificial_intelligence_act
+https://en.wikipedia.org/wiki/Artificial_intelligence
 https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai
 https://digital-strategy.ec.europa.eu/en/faqs/navigating-ai-act
 https://www.europarl.europa.eu/news/en/headlines/society/20230601STO93804/eu-ai-act-first-regulation-on-artificial-intelligence

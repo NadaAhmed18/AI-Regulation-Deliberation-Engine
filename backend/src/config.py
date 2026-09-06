@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,14 +17,15 @@ SLIDING_SENTENCES = 2      # Overlap chunks by this many sentences to preserve c
 MAX_RELATED_LINKS = 20  # Only keep the top X most relevant links per document
 
 # Prompt Template Paths
-# Relative to the working directory. Scripts should always be run as
-# modules from the `backend/` root (e.g. `python -m src.utils.prompt_builder`),
-# so this resolves natively without any sys.path or __file__ manipulation.
 DEFAULT_TEMPLATE_PATH = Path("prompts/initial_opinion.txt")
 
-PERSONAS_DIR = Path("personas")
+# Output Directory
 OUTPUT_DIR = Path("outputs")
-OUTPUT_FILE = Path(OUTPUT_DIR / "initial_opinions.json")
 
+# Default LLM Provider and Model
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+
+# API Keys (set in .env or environment variables)
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+MAX_SEARCH_RESULTS = 5

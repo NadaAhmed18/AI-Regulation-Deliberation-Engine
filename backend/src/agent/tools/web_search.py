@@ -1,131 +1,85 @@
-"""
-LIVE WEB SEARCH TOOL (PURE FUNCTION)
-
-Provides agents with real-time internet search capability via the Tavily
-API. This module owns the tool's implementation and schema exclusively;
-`src/agent/tools/tool_registry.py` only imports and registers them — it
-does not host any tool logic itself.
-"""
-
 import os
-
-import requests
+import asyncio
 from dotenv import load_dotenv
+from tavily import TavilyClient
 
-# Explicit here so this module works correctly whether it's imported via
-# the registry (src/agent/tools/tool_registry.py) or run/imported
-# standalone — it should not depend on another module having already
-# called load_dotenv() first. Safe to call more than once.
+from src.rag.stages.scraper import ingest_batch
+from src.rag.stages.ingestion import ingest_documents
+
 load_dotenv()
 
-TAVILY_API_URL = "https://api.tavily.com/search"
-TAVILY_TIMEOUT_SECONDS = 10
-MAX_ALLOWED_WEB_RESULTS = 5
 
-WEB_SEARCH_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "search_web",
-        "description": (
-            "Search the live internet for recent news, articles, and updates "
-            "on AI policy, AI regulation, and technology that may not be in "
-            "the internal knowledge base (e.g. very recent events)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query (e.g. 'latest UK AI safety institute guidelines').",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Number of web results to retrieve. Defaults to 3.",
-                    "minimum": 1,
-                    "maximum": MAX_ALLOWED_WEB_RESULTS,
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
+def _get_client() -> TavilyClient:
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError("TAVILY_API_KEY environment variable is missing.")
+    return TavilyClient(api_key=api_key)
 
 
 def search_web(query: str, max_results: int = 3) -> str:
-    """
-    Execute a live web search via the Tavily REST API and return formatted
-    text for the calling agent to read as a tool observation.
-
-    Never raises. Returns a plain string in every failure case so a ReAct
-    loop can feed it back to the LLM as an observation instead of crashing:
-        - `query` is empty/whitespace-only, or `max_results` is < 1.
-        - `TAVILY_API_KEY` is not set in the environment.
-        - The request fails (network error, timeout, non-2xx response, or
-          a response body that cannot be parsed as JSON). The underlying
-          exception is logged to the console for debugging; the string
-          returned to the LLM stays generic.
-    """
+    """Search the web for top URLs and snippets using advanced search depth."""
     query = (query or "").strip()
     if not query:
-        return "Web search failed: query cannot be empty."
+        return "Search failed: query cannot be empty."
 
-    if max_results < 1:
-        return "Web search failed: max_results must be at least 1."
-    max_results = min(max_results, MAX_ALLOWED_WEB_RESULTS)
-
-    print(f"\n[Web Tool] 🌐 Searching web for: '{query}'")
-
-    api_key = os.environ.get("TAVILY_API_KEY")
-    if not api_key:
-        return (
-            "Web search is unavailable: no TAVILY_API_KEY is configured in "
-            "the environment. Rely on the internal knowledge base "
-            "(search_ai_policy) instead."
-        )
-
-    payload = {
-        "api_key": api_key,
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "basic",
-    }
-
+    print(f"\n[Web Tool] 🌐 Searching live web for: '{query}'")
     try:
-        response = requests.post(TAVILY_API_URL, json=payload, timeout=TAVILY_TIMEOUT_SECONDS)
-        response.raise_for_status()
-        data = response.json()
-    except requests.RequestException as e:
-        print(f"[Web Tool] ⚠️ Tavily request failed: {e}")
-        return (
-            "Web search failed because the Tavily service could not be "
-            "reached. Rely on the internal knowledge base (search_ai_policy) instead."
-        )
-    except ValueError as e:
-        print(f"[Web Tool] ⚠️ Tavily returned an unparsable response: {e}")
-        return (
-            "Web search failed: Tavily returned a response that could not "
-            "be parsed. Rely on the internal knowledge base (search_ai_policy) instead."
-        )
+        client = _get_client()
+        max_results = min(max(1, max_results), 5)
+        response = client.search(query=query, search_depth="advanced", max_results=max_results)
 
-    results = data.get("results", [])
-    if not results:
-        return "No web results found for this query."
+        results = response.get("results", [])
+        if not results:
+            return "No web results found."
 
-    formatted_response = "Here are the live web search results:\n\n"
-    for i, r in enumerate(results[:max_results], 1):
-        title = r.get("title", "Untitled")
-        url = r.get("url", "N/A")
-        snippet = (r.get("content") or "")[:500]
-        formatted_response += (
-            f"--- WEB SOURCE {i} ---\n"
-            f"Title: {title}\n"
-            f"URL: {url}\n"
-            f"Snippet: {snippet}\n\n"
-        )
+        output = ["Here are the live search results:"]
+        for i, r in enumerate(results, 1):
+            output.append(
+                f"--- SOURCE {i} ---\n"
+                f"Title: {r.get('title', 'N/A')}\n"
+                f"URL: {r.get('url', 'N/A')}\n"
+                f"Snippet: {r.get('content', '')}\n"
+            )
+        return "\n".join(output)
+    except Exception as e:
+        print(f"[Web Tool] ⚠️ Error during search: {e}")
+        return f"Web search encountered an error: {e}"
 
-    return formatted_response
+
+def learn_and_ingest_url(url: str) -> str:
+    """
+    Crawls a URL, and passes it directly to ingestion.
+    Ingestion handles deduplication and automatic graph edge wiring.
+    """
+    url = (url or "").strip()
+    if not url.startswith("http"):
+        return "Learning failed: a valid http/https URL must be provided."
+
+    print(f"\n[Web Tool] 🧠 Processing URL: {url}")
+    try:
+        # 1. Scrape the document
+        docs = asyncio.run(ingest_batch([url]))
+        if not docs:
+            return f"Failed to extract content from {url} (page may be blocked or empty)."
+
+        doc = docs[0]
+
+        # 2. Hand off directly to ingestion (default: on_conflict='ignore')
+        stats = ingest_documents([doc], on_conflict="ignore")
+
+        # 3. Formulate clear response for the agent
+        status_msg = "newly ingested and linked in the graph"
+        if stats["skipped"] > 0:
+            status_msg = "already present in the graph; relationships verified"
+        
+        return f"Successfully learned from {url}: {status_msg}."
+
+    except Exception as e:
+        print(f"[Web Tool] ⚠️ Error during learning ingestion: {e}")
+        return f"Failed to learn from {url}: {e}"
 
 
 if __name__ == "__main__":
-    # Run as: python -m src.agent.tools.web_search
+    # Smoke test: python -m src.agent.tools.web_search
     print(search_web("EU AI Act 2026 updates"))
+    print(learn_and_ingest_url("https://en.wikipedia.org/wiki/Artificial_Intelligence_Act"))

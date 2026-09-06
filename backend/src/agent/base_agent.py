@@ -12,7 +12,6 @@ from src.utils.prompt_builder import (
     render_initial_opinion_prompt,
 )
 
-
 class BaseAgent:
     def __init__(self, persona: dict, provider: Optional[str] = None, model_name: Optional[str] = None):
         self.persona = persona

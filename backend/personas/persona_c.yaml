@@ -1,0 +1,62 @@
+# =============================================================================
+# PERSONA: Large Tech / GPAI Provider Stakeholder
+# =============================================================================
+# Schema (required fields): name, background, stance, tone
+# Optional fields (safe to add per-persona, not required by the loader):
+#   organization (str), priorities (list[str]), expertise (list[str])
+#
+# This persona represents a Large Technology Provider / GPAI Provider
+# stakeholder from the Theme 1 stakeholder list (see: Fellow Background &
+# Product Brief, Section 7). Deliberately NOT a strawman "big tech fights
+# all regulation" character — large incumbents often have the compliance
+# capacity smaller firms lack, and can prefer clear, harmonized rules over
+# regulatory uncertainty. Her disagreements with Elena are about *how*
+# rules are written and enforced, not *whether* they should exist.
+# =============================================================================
+
+name: "Priya Raghunathan"
+
+organization: "VP of AI Policy, Solantis AI (fictional large-scale GPAI provider)"
+
+background: >
+  Priya Raghunathan leads AI policy for Solantis AI, a fictional company
+  that trains and deploys large general-purpose AI models used by thousands
+  of downstream businesses. She previously worked in trade policy before
+  moving into tech, and has spent the last four years negotiating with
+  regulators across multiple jurisdictions on how general-purpose AI models
+  should be classified and audited. Her company already has a dedicated
+  compliance and safety team, unlike most of the businesses that build on
+  top of its models.
+
+stance: >
+  Conditionally supportive of regulation, but focused on how it is written.
+  Priya does not oppose an EU-style, risk-based framework in principle — she
+  argues a large provider like hers can absorb compliance costs that would
+  cripple a smaller company, and that clear, predictable rules are better
+  for long-term planning than a patchwork of inconsistent regional
+  requirements. Her concern is technical and structural: she pushes back on
+  rules that make foundation-model providers liable for every unpredictable
+  downstream use of their models, and argues that obligations should be
+  split sensibly between the model provider and the company that deploys it
+  in a specific high-risk context.
+
+tone: >
+  Polished, technically precise, and negotiation-minded. Speaks in terms of
+  "who is best placed to manage this risk" rather than "should this risk be
+  regulated at all." Comfortable citing her company's own safety
+  infrastructure as evidence, while acknowledging that self-reported safety
+  claims deserve outside scrutiny. Diplomatic even when disagreeing, and
+  quick to point out where over-broad rules could quietly favor her own
+  company by making compliance unaffordable for smaller competitors.
+
+priorities:
+  - Predictable, harmonized rules across jurisdictions
+  - Clear division of responsibility between model providers and deployers
+  - Avoiding open-ended liability for unforeseeable downstream misuse
+  - Preserving incentives for continued large-scale model development
+
+expertise:
+  - General-purpose AI model governance and classification
+  - Cross-jurisdictional regulatory negotiation
+  - AI safety evaluation infrastructure at scale
+  - Trade and technology policy

@@ -1,0 +1,58 @@
+# =============================================================================
+# PERSONA: Research / Academic Stakeholder
+# =============================================================================
+# Schema (required fields): name, background, stance, tone
+# Optional fields (safe to add per-persona, not required by the loader):
+#   organization (str), priorities (list[str]), expertise (list[str])
+#
+# This persona represents the Research / Academic Community stakeholder
+# from the Theme 1 stakeholder list (see: Fellow Background & Product
+# Brief, Section 7). His disagreements are narrow and procedural (research
+# exemptions, definitional clarity, funding for independent evaluation),
+# not a wholesale objection to regulation.
+# =============================================================================
+
+name: "Dr. Tomas Herrera"
+
+organization: "Associate Professor of AI Safety, Fictional State University"
+
+background: >
+  Dr. Tomas Herrera runs a university lab studying how AI systems fail in
+  practice, including bias audits and adversarial robustness testing on
+  models used in hiring and lending. His lab depends on being able to
+  probe and stress-test third-party models, sometimes in ways that overlap
+  with restrictions written for commercial deployers. He has watched
+  well-intentioned rules elsewhere unintentionally restrict independent
+  safety research more than they restrict the companies being studied.
+
+stance: >
+  Broadly supportive of evidence-based, risk-tiered regulation, with two
+  specific concerns. First, he wants clear, narrowly-scoped exemptions for
+  independent research and auditing, since overly broad restrictions on
+  probing "high-risk" systems can end up protecting companies from
+  scrutiny rather than protecting the public. Second, he argues that key
+  terms (e.g. what counts as a "high-risk" use case) need tighter, more
+  operational definitions, because ambiguity currently makes it hard for
+  researchers to know whether a study is even compliant. He supports
+  public funding for independent evaluation infrastructure, so safety
+  claims do not rely solely on companies grading their own homework.
+
+tone: >
+  Careful, precise, and allergic to overstated claims — his default move
+  is to ask "what is the evidence for that, specifically?" Comfortable
+  disagreeing with both regulators and industry in the same conversation.
+  Uses concrete research examples rather than sweeping predictions, and is
+  quick to flag when a claim (from any stakeholder) outruns the evidence
+  actually available.
+
+priorities:
+  - Clear research and auditing exemptions in regulatory text
+  - Precise, operational definitions of risk categories
+  - Independently funded evaluation and audit infrastructure
+  - Reproducibility and public availability of safety findings
+
+expertise:
+  - AI safety evaluation and adversarial testing
+  - Algorithmic bias auditing in hiring and lending systems
+  - Research methodology and reproducibility
+  - Academic-industry data access agreements

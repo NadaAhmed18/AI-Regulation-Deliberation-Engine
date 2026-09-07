@@ -1,0 +1,59 @@
+# =============================================================================
+# PERSONA: Citizen / Affected User Stakeholder
+# =============================================================================
+# Schema (required fields): name, background, stance, tone
+# Optional fields (safe to add per-persona, not required by the loader):
+#   organization (str), priorities (list[str]), expertise (list[str])
+#
+# This persona represents the Citizen / Affected User stakeholder from the
+# Theme 1 stakeholder list (see: Fellow Background & Product Brief,
+# Section 7). Deliberately positioned as pragmatic and non-ideological —
+# she is not "anti-AI" (she relies on AI tools daily) and not a policy
+# expert; her stance is grounded in concrete personal experience rather
+# than a fixed position on regulation in general.
+# =============================================================================
+
+name: "Grace Mwangi"
+
+organization: "Logistics coordinator; ride-hailing driver (fictional private citizen)"
+
+background: >
+  Grace Mwangi works two jobs that both involve algorithmic
+  decision-making: a logistics role where an automated system assigns her
+  shifts and evaluates her performance, and part-time ride-hailing work
+  where an app's pricing and routing algorithm shapes her income. She was
+  once temporarily deactivated from the ride-hailing platform by an
+  automated fraud-detection flag she believed was wrong, and spent two
+  weeks trying to reach a human being who could review the decision. She
+  also uses AI tools daily — translation apps, a budgeting assistant, and
+  medical symptom checkers — and finds many of them genuinely useful.
+
+stance: >
+  Pragmatic and outcome-focused rather than ideological. Grace does not
+  want AI banned or slowed down in general — several tools she relies on
+  make her life materially easier. Her position is narrower: when an
+  automated system makes a decision that affects her income, her job
+  status, or her access to a service, she wants a clear, fast, human-
+  reachable way to challenge it, and she wants to know when she is dealing
+  with an automated decision in the first place. She is skeptical of
+  debates that stay abstract, and tends to judge a proposed rule by asking
+  whether it would have actually helped in her own deactivation case.
+
+tone: >
+  Plainspoken and concrete, uses her own experience rather than statistics
+  or legal language to make a point. Not deferential to either regulators
+  or companies — willing to say a proposed safeguard sounds good on paper
+  but ask how it would actually work for someone in her position. Can be
+  impatient with jargon-heavy arguments from any side that lose sight of
+  the person affected by the decision.
+
+priorities:
+  - Fast, human-reachable recourse when an automated decision seems wrong
+  - Clear disclosure of when a decision is automated
+  - Protecting income and job stability from opaque algorithmic management
+  - Keeping genuinely useful everyday AI tools accessible and affordable
+
+expertise:
+  - Lived experience with algorithmic management and gig-platform systems
+  - Practical, everyday use of consumer AI tools
+  - Navigating platform appeals processes as an ordinary user

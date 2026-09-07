@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langfuse import observe
 
+from src.config import MAX_REACT_STEPS
 from src.clients.llm_client import LLMClient
 from src.agent.tools.tool_registry import (
     get_tool_schemas_for_role,
@@ -50,7 +51,7 @@ class BaseAgent:
         self, 
         messages: Optional[List[Dict[str, Any]]] = None,
         user_prompt: Optional[str] = None, 
-        max_steps: int = 5
+        max_steps: int = MAX_REACT_STEPS
     ) -> Tuple[str, List[str]]:
         """
         Executes an autonomous ReAct loop where the agent decides which tools to call.
@@ -68,27 +69,32 @@ class BaseAgent:
                 active_messages.append({"role": "user", "content": user_prompt})
 
         discovered_urls: set[str] = set()
+        executed_calls = set()
 
         for step in range(max_steps):
             response = self.llm.generate_response(messages=active_messages)
 
-            # 1. Agent finished thinking and provided final text
+            # 1. Final answer delivered
             if response["type"] == "text":
-                final_text = str(response["content"])
-                return final_text, list(discovered_urls)
+                return str(response["content"]), list(discovered_urls)
 
-            # 2. Agent decided to call a tool
+            # 2. Tool requested
             if response["type"] == "tool_call":
                 tool_name = str(response["tool_name"])
                 arguments = response["arguments"]
                 tool_call_id = response.get("tool_call_id", f"call_{step}")
                 
-                arguments_str = json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
+                arguments_str = json.dumps(arguments, sort_keys=True) if isinstance(arguments, dict) else str(arguments)
+                call_signature = (tool_name, arguments_str)
 
-                print(f"[{self.name}] 🛠️ Step {step + 1}: Autonomously calling tool '{tool_name}' with args: {arguments}")
-                
-                # Execute the tool safely via registry
-                observation = execute_tool(tool_name, arguments, allowed_tools=self.allowed_tool_names)
+                # Loop detection guard
+                if call_signature in executed_calls:
+                    print(f"[{self.name}] ⚠️ Loop detected: Attempted identical tool call '{tool_name}'. Halting loop.")
+                    observation = "Error: You have already executed this exact tool with these parameters. Formulate your final answer immediately without repeating calls."
+                else:
+                    executed_calls.add(call_signature)
+                    print(f"[{self.name}] 🛠️ Step {step + 1}: Calling tool '{tool_name}' with args: {arguments}")
+                    observation = execute_tool(tool_name, arguments, allowed_tools=self.allowed_tool_names)
 
                 # Track sources: Extract any URLs returned in tool output
                 found_urls = re.findall(r'URL:\s*(https?://[^\s\n]+)', observation)

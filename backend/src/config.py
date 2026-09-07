@@ -2,35 +2,73 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Load environment variables from .env file
 load_dotenv()
 
-# Embedding Model
-VECTOR_DIMENSION = 1024 # 1024 (default), 256, 512, 2048
-EMBEDDING_MODEL = "voyage-3.5-lite"
+# ==============================================================================
+# 1. DIRECTORY & PATH CONFIGURATION
+# ==============================================================================
+BASE_DIR = Path(__file__).resolve().parent.parent  # Points to 'backend/'
+PROMPTS_DIR = BASE_DIR / "prompts"
+OUTPUT_DIR = BASE_DIR / "outputs"
+DATA_DIR = BASE_DIR / "data"
 
-# Chunking Parameters
-MAX_CHARS = 12000          # Max characters per chunk (staying safely below model token limits)
-MAX_CHUNKS = 2            # Stop extracting if we reach this many chunks per document
-SLIDING_SENTENCES = 2      # Overlap chunks by this many sentences to preserve context
+# Ensure runtime directories exist
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Link Reranking Parameters
-MAX_RELATED_LINKS = 20  # Only keep the top X most relevant links per document
 
-# Prompt Template Paths
-DEFAULT_TEMPLATE_PATH = Path("prompts/initial_opinion.txt")
-
-# Output Directory
-OUTPUT_DIR = Path("outputs")
-PROMPTS_DIR = Path("prompts")
-
-# Default LLM Provider and Model
-DEFAULT_PROVIDER = "openrouter"
-DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+# ==============================================================================
+# 2. LLM & PROVIDER CONFIGURATION
+# ==============================================================================
+DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "openrouter").lower()  # "openrouter" or "huggingface"
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-# API Keys (set in .env or environment variables)
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-MAX_SEARCH_RESULTS = 5
 
-# Other
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/ai_regulation")
+# ==============================================================================
+# 3. EMBEDDING & VECTOR RETRIEVAL
+# ==============================================================================
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "voyage").lower()  # "voyage" or "hf"
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "voyage-3.5-lite")
+VECTOR_DIMENSION = int(os.getenv("VECTOR_DIMENSION", 1024))
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY", "")
+
+
+# ==============================================================================
+# 4. RAG INGESTION & SCRAPING PARAMETERS
+# ==============================================================================
+MAX_CHARS = 12000          # Maximum characters per chunk before splitting
+MAX_CHUNKS = 2             # Hard cap on chunks extracted per document
+SLIDING_SENTENCES = 2      # Overlapping sentences between consecutive chunks
+MAX_RELATED_LINKS = 20     # FlashRank top-K limit for internal cross-document links
+
+
+# ==============================================================================
+# 5. MULTI-AGENT SIMULATION & REACT SETTINGS
+# ==============================================================================
+MAX_REACT_STEPS = int(os.getenv("MAX_REACT_STEPS", 5))       # Max autonomous tool calls per agent turn
+DEFAULT_ROUNDS = int(os.getenv("DEFAULT_ROUNDS", 3))         # Default debate rounds
+DEFAULT_NUM_AGENTS = int(os.getenv("DEFAULT_NUM_AGENTS", 3)) # Default number of generated personas
+
+
+# ==============================================================================
+# 6. EXTERNAL TOOLS & WEB SEARCH
+# ==============================================================================
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+MAX_SEARCH_RESULTS = 5     # Max external search results from Tavily
+
+
+# ==============================================================================
+# 7. DATABASE CONNECTIONS
+# ==============================================================================
+# PostgreSQL (Relational Discussion State & Analytics)
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", 
+    "postgresql://postgres:password@localhost:5432/ai_regulation"
+)
+
+# Neo4j (Graph Knowledge Base & Vector Index)
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password123")

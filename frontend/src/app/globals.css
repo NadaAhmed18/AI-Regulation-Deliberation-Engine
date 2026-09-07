@@ -43,88 +43,108 @@
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ==========================================================================
+   DEFAULT LIGHT MODE (Crisp White + Rich Deep Teal Accents)
+   ========================================================================== */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.99 0.002 185);
+  --foreground: oklch(0.18 0.02 200);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.18 0.02 200);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --popover-foreground: oklch(0.18 0.02 200);
+
+  /* Deep Teal Brand (#0f766e equivalent) */
+  --primary: oklch(0.52 0.13 185);
+  --primary-foreground: oklch(0.99 0 0);
+
+  --secondary: oklch(0.96 0.015 185);
+  --secondary-foreground: oklch(0.3 0.06 185);
+  --muted: oklch(0.95 0.008 185);
+  --muted-foreground: oklch(0.48 0.02 200);
+  --accent: oklch(0.94 0.02 185);
+  --accent-foreground: oklch(0.25 0.08 185);
+  --destructive: oklch(0.58 0.22 25);
+  --border: oklch(0.9 0.012 185);
+  --input: oklch(0.9 0.012 185);
+  --ring: oklch(0.55 0.13 185);
+
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  --sidebar: oklch(0.975 0.006 185);
+  --sidebar-foreground: oklch(0.2 0.02 200);
+  --sidebar-primary: oklch(0.52 0.13 185);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.93 0.018 185);
+  --sidebar-accent-foreground: oklch(0.2 0.05 185);
+  --sidebar-border: oklch(0.9 0.012 185);
+  --sidebar-ring: oklch(0.55 0.13 185);
 }
 
+/* ==========================================================================
+   DARK MODE (Deep Obsidian-Teal + Luminous Cyan/Teal Accents)
+   ========================================================================== */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.13 0.018 200);
+  --foreground: oklch(0.96 0.01 185);
+  --card: oklch(0.17 0.022 200);
+  --card-foreground: oklch(0.96 0.01 185);
+  --popover: oklch(0.17 0.022 200);
+  --popover-foreground: oklch(0.96 0.01 185);
+
+  /* Glowing Teal / Cyan (#14b8a6 equivalent) */
+  --primary: oklch(0.74 0.15 180);
+  --primary-foreground: oklch(0.12 0.02 200);
+
+  --secondary: oklch(0.22 0.025 195);
+  --secondary-foreground: oklch(0.92 0.02 185);
+  --muted: oklch(0.21 0.02 200);
+  --muted-foreground: oklch(0.65 0.02 195);
+  --accent: oklch(0.23 0.035 190);
+  --accent-foreground: oklch(0.95 0.02 185);
+  --destructive: oklch(0.65 0.19 22);
+  --border: oklch(0.25 0.025 200);
+  --input: oklch(0.25 0.025 200);
+  --ring: oklch(0.74 0.15 180);
+
+  --sidebar: oklch(0.15 0.02 200);
+  --sidebar-foreground: oklch(0.95 0.01 185);
+  --sidebar-primary: oklch(0.74 0.15 180);
+  --sidebar-primary-foreground: oklch(0.12 0.02 200);
+  --sidebar-accent: oklch(0.22 0.03 195);
+  --sidebar-accent-foreground: oklch(0.95 0.02 185);
+  --sidebar-border: oklch(0.24 0.025 200);
+  --sidebar-ring: oklch(0.74 0.15 180);
 }
 
+/* ==========================================================================
+   BASE & TYPOGRAPHY SCALING (Larger, Crisper Font Scale)
+   ========================================================================== */
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border-color: var(--border);
+    outline-color: color-mix(in oklch, var(--ring) 50%, transparent);
+    transition-property:
+      color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
   }
-  body {
-    @apply bg-background text-foreground;
-  }
+
   html {
-    @apply font-sans;
+    font-family: var(--font-sans), system-ui, sans-serif;
+    /* Scales all rem-based typography and UI elements slightly larger */
+    font-size: 16.5px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-size: 0.95rem;
+    line-height: 1.55;
   }
 }

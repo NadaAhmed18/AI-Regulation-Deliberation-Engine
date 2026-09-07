@@ -8,7 +8,7 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "AI Regulation — Multi-Agent Deliberation Engine",
   description:
-    "Autonomous multi-agent debate with live RAG and CFG opinion dynamics",
+    "Autonomous multi-agent debate with live RAG and opinion dynamics",
 };
 
 export default function RootLayout({
@@ -17,11 +17,26 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                if (localStorage.getItem('theme') === 'dark') {
+                  document.documentElement.classList.add('dark');
+                } else {
+                  document.documentElement.classList.remove('dark');
+                }
+              } catch (_) {}
+            `,
+          }}
+        />
+      </head>
       <body
-        className={`${inter.className} bg-background text-foreground antialiased`}
+        className={`${inter.className} bg-background text-foreground antialiased selection:bg-teal-500/20`}
       >
-        <TooltipProvider delayDuration={200}>{children}</TooltipProvider>
+        <TooltipProvider delay={200}>{children}</TooltipProvider>
       </body>
     </html>
   );

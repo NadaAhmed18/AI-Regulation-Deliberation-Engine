@@ -31,3 +31,49 @@ export interface DiscussionTurn {
     opinion_snapshot: OpinionSnapshot;
     timestamp: string;
 }
+
+export interface DebateHistoryItem {
+    id: string;
+    title: string;
+    category: "Today" | "Yesterday" | "6 days ago" | "Month ago" | "Long time ago";
+    agentsCount: number;
+    roundsCount: number;
+}
+
+export interface GraphNodeData {
+    id: string;
+    name: string;
+    avatarUrl: string;
+    currentStance: number;
+    role?: string;
+}
+
+export interface GraphEdgeData {
+    source: string;
+    target: string;
+    weight: number;
+    dynamic?: string;
+    round?: number;
+}
+
+export interface SimulationAnalytics {
+    nodes: GraphNodeData[];
+    edges: GraphEdgeData[];
+    trajectory: Array<Record<string, number | string>>;
+    persuasion_signals: Array<{
+        id: string;
+        source: string;
+        target: string;
+        shift: number;
+        gamma: number;
+        dynamic: string;
+    }>;
+    citations: string[];
+}
+
+export interface PredefinedTopic {
+    id: string;
+    title: string;
+    tag: string;
+    description: string;
+}

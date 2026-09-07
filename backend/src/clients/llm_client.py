@@ -3,9 +3,12 @@ import os
 import gc
 import re
 from typing import Optional, Any
-from openai import OpenAI
-from src.config import DEFAULT_PROVIDER, DEFAULT_MODEL
 
+# Langfuse imports
+from langfuse.api import OpenAI as LangfuseOpenAI
+from langfuse import observe, get_client
+
+from src.config import DEFAULT_PROVIDER, DEFAULT_MODEL,OPENROUTER_API_KEY
 
 class LLMClient:
     def __init__(self, provider: Optional[str] = None, model_name: Optional[str] = None, tools: Optional[list] = None):
@@ -13,22 +16,19 @@ class LLMClient:
         self.model_name = model_name or DEFAULT_MODEL
         self.tools = tools or []
         
-        # Placeholders for active clients/models
-        self._client: Optional[OpenAI] = None
+        self._client: Optional[LangfuseOpenAI] = None
         self.hf_model: Any = None
         self.hf_tokenizer: Any = None
 
         if self.provider == "openrouter":
-            api_key_env = f"{self.provider.upper()}_API_KEY"
-            api_key = os.environ.get(api_key_env)
-            if not api_key:
-                raise RuntimeError(f"Missing {api_key_env} environment variable")
+            if not OPENROUTER_API_KEY:
+                raise RuntimeError("Missing OPENROUTER_API_KEY")
 
-            self._client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+            # Drop-in replacement: Langfuse automatically traces the OpenRouter API calls!
+            self._client = LangfuseOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
             
         elif self.provider == "huggingface":
             print(f"[*] Initializing local HuggingFace model: {self.model_name}")
-            # Lazy import to avoid loading massive ML libraries if we are just using OpenRouter
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
             
@@ -37,110 +37,109 @@ class LLMClient:
             
             self.hf_tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.hf_model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype=dtype,
-                device_map="auto" if self.device == "cuda" else None
+                self.model_name, torch_dtype=dtype, device_map="auto" if self.device == "cuda" else None
             )
-        else:
-            raise ValueError(f"Unsupported provider: {self.provider}. Please use 'openrouter' or 'huggingface'.")
 
-    def generate_response(self, messages: list) -> dict:
-        """Routes the generation request to the correct provider backend."""
+    def generate_response(self, messages: list, response_format: str = "text") -> dict:
+        """Routes the request. This is the entry point for the LLM."""
         if self.provider == "openrouter":
-            return self._generate_openrouter(messages)
+            return self._generate_openrouter(messages, response_format)
         elif self.provider == "huggingface":
-            return self._generate_huggingface(messages)
-            
-        # Fallback to satisfy strict type-checkers (reportReturnType)
+            return self._generate_huggingface(messages, response_format)
         raise ValueError(f"Unknown provider: {self.provider}")
 
-    def _generate_openrouter(self, messages: list) -> dict:
-        # Guard against None to satisfy Pylance
-        if self._client is None:
-            raise RuntimeError("OpenRouter client is not initialized.")
-
-        kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": messages,
-        }
+    # No decorator needed here; LangfuseOpenAI handles it automatically under the hood
+    def _generate_openrouter(self, messages: list, response_format: str) -> dict:
+        kwargs: dict[str, Any] = {"model": self.model_name, "messages": messages}
         if self.tools:
             kwargs["tools"] = self.tools
+            
+        if response_format == "json_object":
+            kwargs["response_format"] = {"type": "json_object"}
 
+
+        assert self._client is not None, "OpenRouter client is not initialized"
         completion = self._client.chat.completions.create(**kwargs)
         message = completion.choices[0].message
 
         if message.tool_calls:
             tool_call = message.tool_calls[0]
             try:
-                arguments = json.loads(tool_call.function.arguments)
-            except (json.JSONDecodeError, TypeError):
-                arguments = {}
+                args = json.loads(tool_call.function.arguments)
+            except Exception:
+                args = {}
+            return {"type": "tool_call", "tool_name": tool_call.function.name, "arguments": args, "tool_call_id": tool_call.id}
 
-            return {
-                "type": "tool_call",
-                "tool_name": tool_call.function.name,
-                "arguments": arguments,
-                "tool_call_id": tool_call.id,
-            }
+        return {"type": "text", "content": message.content or ""}
 
-        return {
-            "type": "text",
-            "content": message.content or "",
-        }
-
-    def _generate_huggingface(self, messages: list) -> dict:
-        # Guard against None to satisfy Pylance
-        if self.hf_tokenizer is None or self.hf_model is None:
-            raise RuntimeError("HuggingFace model is not initialized.")
-            
-        # Cast to Any locally so Pylance stops complaining about complex HF signatures
-        tokenizer: Any = self.hf_tokenizer
-        model: Any = self.hf_model
+    # We manually trace HuggingFace using the @observe decorator
+    @observe(as_type="generation", name="hf_local_generation")
+    def _generate_huggingface(self, messages: list, response_format: str = "text") -> dict:
+        tokenizer, model = self.hf_tokenizer, self.hf_model
         
-        # Apply the chat template. If the HF model supports tools, it will format the prompt accordingly.
+        # 1. ENFORCE JSON IN PROMPT: If JSON is requested, ensure the prompt explicitly demands it
+        active_messages = list(messages)
+        if response_format == "json_object":
+            # Append a system reminder to guarantee valid syntax
+            active_messages.append({
+                "role": "system", 
+                "content": "CRITICAL: You must output ONLY a valid JSON object or array. Do not include markdown formatting, backticks, or any conversational text."
+            })
+        
+        # Log input into Langfuse manually for HF
+        get_client().update_current_generation(input=active_messages, model=self.model_name)
+        
         prompt = tokenizer.apply_chat_template(
-            messages, 
-            tools=self.tools if self.tools else None,
+            active_messages, 
+            tools=self.tools or None, 
             tokenize=False, 
             add_generation_prompt=True
         )
-        
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        outputs = model.generate(**inputs, max_new_tokens=1024, pad_token_id=tokenizer.eos_token_id)
         
-        outputs = model.generate(
-            **inputs, 
-            max_new_tokens=1024,
-            pad_token_id=tokenizer.eos_token_id
-        )
+        response_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True).strip()
         
-        # Extract only the newly generated text
-        response_text = tokenizer.decode(
-            outputs[0][inputs.input_ids.shape[-1]:], 
-            skip_special_tokens=True
-        ).strip()
+        # 2. HANDLE JSON ENFORCEMENT POST-GENERATION
+        if response_format == "json_object":
+            # Strip markdown formatting like ```json ... ```
+            cleaned_text = re.sub(r'^```(?:json)?\s*', '', response_text, flags=re.MULTILINE)
+            cleaned_text = re.sub(r'\s*```$', '', cleaned_text, flags=re.MULTILINE).strip()
+            
+            # Extract only the outermost { ... } or [ ... ]
+            json_match = re.search(r'(\{.*\}|\[.*\])', cleaned_text, re.DOTALL)
+            if json_match:
+                cleaned_text = json_match.group(1)
 
-        # Simple Regex Fallback parser for Hugging Face tool outputs
-        # Open source models output tools in varying formats. This attempts to catch standard JSON tool calls.
-        if self.tools and "{" in response_text and "}" in response_text:
+            # Validate by parsing and re-serializing
             try:
-                json_match = re.search(r'(\{.*?\})', response_text, re.DOTALL)
-                if json_match:
-                    parsed = json.loads(json_match.group(1))
-                    # Check if the JSON resembles a tool call schema
+                parsed_json = json.loads(cleaned_text)
+                response_text = json.dumps(parsed_json)  # Guarantees 100% syntactically valid JSON string
+            except json.JSONDecodeError as e:
+                print(f"[!] Warning: HF model output invalid JSON: {e}. Raw text: {response_text}")
+                # Fallback to an empty json structure so callers don't crash
+                response_text = "{}"
+
+        # Log final output into Langfuse
+        get_client().update_current_generation(output=response_text)
+
+        # 3. Tool call parsing (same as before)
+        if self.tools and "{" in response_text and "}" in response_text and response_format != "json_object":
+            match = re.search(r'(\{.*?\})', response_text, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1))
                     if "name" in parsed and "arguments" in parsed:
                         return {
-                            "type": "tool_call",
-                            "tool_name": parsed["name"],
-                            "arguments": parsed["arguments"],
+                            "type": "tool_call", 
+                            "tool_name": parsed["name"], 
+                            "arguments": parsed["arguments"], 
                             "tool_call_id": "call_hf_" + os.urandom(4).hex()
                         }
-            except Exception:
-                pass # If JSON parsing fails, fall back to treating it as normal text
+                except Exception:
+                    pass
 
-        return {
-            "type": "text",
-            "content": response_text
-        }
+        return {"type": "text", "content": response_text}
 
     def __del__(self):
         """Cleanup function to delete the model and free VRAM/RAM when the agent is destroyed."""

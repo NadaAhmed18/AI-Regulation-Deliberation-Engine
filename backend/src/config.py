@@ -26,6 +26,7 @@ PROMPTS_DIR = Path("prompts")
 # Default LLM Provider and Model
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 # API Keys (set in .env or environment variables)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")

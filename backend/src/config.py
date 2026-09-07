@@ -18,9 +18,12 @@ MAX_RELATED_LINKS = 20  # Only keep the top X most relevant links per document
 
 # Prompt Template Paths
 DEFAULT_TEMPLATE_PATH = Path("prompts/initial_opinion.txt")
+PROMPTS_DIR = Path("prompts")
 
 # Output Directory
 OUTPUT_DIR = Path("outputs")
+
+# Persona Pool Directory (Week 2/3 — see src/discussion/persona_pool.py)
 PERSONAS_DIR = Path("personas")
 
 # Default LLM Provider and Model
@@ -30,3 +33,6 @@ DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 # API Keys (set in .env or environment variables)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 MAX_SEARCH_RESULTS = 5
+
+# Other
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/ai_regulation")

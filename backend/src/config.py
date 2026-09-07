@@ -21,6 +21,7 @@ DEFAULT_TEMPLATE_PATH = Path("prompts/initial_opinion.txt")
 
 # Output Directory
 OUTPUT_DIR = Path("outputs")
+PERSONAS_DIR = Path("personas")
 
 # Default LLM Provider and Model
 DEFAULT_PROVIDER = "openrouter"

@@ -11,21 +11,20 @@ Your job is to mathematically track how an agent's opinion evolves over the cour
 Topic: {topic}
 Agent Name: {agent_name}
 Agent's Original Persona Stance: {original_stance}
+Agent's Previous Stance Score: {previous_score}
 
 # Agent's Latest Statement
 {latest_statement}
 
 # Task
-Analyze the latest statement. Did they double down on their original stance? Did they concede a point to an opponent (moving closer to 0.0)? 
+Analyze the latest statement. Did they double down on their original stance? Did they concede a point to an opponent (moving closer to 0.0)? Use "Agent's Previous Stance Score" above as the baseline for judging whether and how far they moved — if it says "None," this is their first scored turn, so just score their current statement and do not describe a shift.
 
 Output a raw JSON object containing:
 1. "current_stance_score": A float between -5.0 and 5.0.
-2. "shift_magnitude": The difference compared to their last known score.
-3. "reasoning": A single, concise sentence explaining why this score was given based on their words.
+2. "reasoning": A single, concise sentence explaining why this score was given based on their words.
 
 Example JSON Output:
-{
+{{
   "current_stance_score": -3.5,
-  "shift_magnitude": 0.5,
   "reasoning": "The agent maintained a strong anti-regulation stance but conceded that deepfakes require some localized moderation."
-}
+}}

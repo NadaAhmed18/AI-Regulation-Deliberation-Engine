@@ -159,7 +159,6 @@ class DiscussionEngine:
                 if not raw_sim_row:
                     raise ValueError(f"Simulation ID '{sim_id}' not found in database.")
 
-                # Explicit conversion to dict satisfies Pylance strict typing
                 sim_data: Dict[str, Any] = dict(raw_sim_row)
 
                 # 2. Get the highest round currently played
@@ -197,3 +196,70 @@ class DiscussionEngine:
         final_state: Dict[str, Any] = self.graph.invoke(resume_state)
         print(f"[Engine] ⏸️ Paused at Round {final_state['current_round']}.")
         return final_state
+
+
+if __name__ == "__main__":
+    # Test runner: python -m src.orchestration.discussion_graph
+    import uuid
+    from src.orchestration.setup_manager import SetupManager
+
+    print("\n" + "=" * 60)
+    print(" smoke test: DiscussionEngine & step_discussion ".center(60, "="))
+    print("=" * 60)
+
+    test_sim_id = f"test_sim_{uuid.uuid4().hex[:6]}"
+    test_topic = "Should AI labs register GPU clusters above 10,000 units?"
+
+    # 1. Setup personas with distinct memory strategies
+    setup_mgr = SetupManager()
+    test_personas = [
+        {
+            "name": "Dr. Elena Kovac",
+            "background": "AI Security Auditor at European AI Safety Institute.",
+            "stance": "Pro-regulation, mandatory hardware registry.",
+            "tone": "Formal, empirical, cautious",
+            "memory_config": {"type": "summary"}
+        },
+        {
+            "name": "Alex Mercer",
+            "background": "Open Source Foundation representative.",
+            "stance": "Anti-centralized registration, privacy advocate.",
+            "tone": "Assertive, technical, direct",
+            "memory_config": {"type": "sliding_window", "window_size": 2}
+        },
+    ]
+
+    # 2. Construct Visibility Matrix (Ring: Elena sees Alex, Alex sees Elena)
+    test_vis_matrix = SetupManager.build_visibility_matrix(test_personas, topology="ring")
+
+    # 3. Initialize Postgres simulation record
+    db_client = PostgresClient()
+    db_client.create_simulation(
+        sim_id=test_sim_id,
+        topic=test_topic,
+        memory_strategy={"type": "sliding_window", "window_size": 3},
+        personas=test_personas
+    )
+    print(f"[+] Initialized simulation record: '{test_sim_id}' in PostgreSQL.")
+
+    engine = DiscussionEngine()
+
+    # 4. Phase 1: Run 2 steps
+    print("\n--- PHASE 1: Running 2 Initial Steps ---")
+    state_after_2 = engine.step_discussion(
+        sim_id=test_sim_id,
+        steps=2,
+        visibility_matrix=test_vis_matrix
+    )
+    print(f"[✔] Phase 1 completed. Current round: {state_after_2['current_round']}")
+
+    # 5. Phase 2: Resume and run 1 more step
+    print("\n--- PHASE 2: Resuming for 1 Additional Step ---")
+    state_after_3 = engine.step_discussion(
+        sim_id=test_sim_id,
+        steps=1,
+        visibility_matrix=test_vis_matrix
+    )
+    print(f"[✔] Phase 2 completed. Final round reached: {state_after_3['current_round']}")
+    print(f"[Last Speaker]: {state_after_3['current_speaker']}")
+    print(f"[Last Stance Score]: {state_after_3['last_opinion'].get('current_stance_score')}")

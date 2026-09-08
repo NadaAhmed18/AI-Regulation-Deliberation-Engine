@@ -65,12 +65,59 @@ class SetupManager:
 
         return personas
 
+    @staticmethod
+    def build_visibility_matrix(personas: List[Dict[str, Any]], topology: str = "ring") -> Dict[str, List[str]]:
+        """
+        Generates visibility map (who each agent is allowed to hear from).
+        - 'ring': Strongly connected directed loop (A -> B -> C -> A)
+        - 'mesh': Full communication (all see all)
+        """
+        names = [p["name"] for p in personas]
+        n = len(names)
+        matrix: Dict[str, List[str]] = {}
+
+        if topology == "ring":
+            for i in range(n):
+                listener = names[i]
+                speaker = names[(i - 1 + n) % n]
+                matrix[listener] = [speaker]
+        elif topology == "mesh":
+            for listener in names:
+                matrix[listener] = [s for s in names if s != listener]
+        else:
+            raise ValueError(f"Unsupported topology preset: {topology}")
+
+        return matrix
+
+
 if __name__ == "__main__":
-    # Smoke Test
+    # Test runner: python -m src.orchestration.setup_manager
+    print("\n" + "=" * 60)
+    print(" smoke test: SetupManager ".center(60, "="))
+    print("=" * 60)
+
     manager = SetupManager()
+    sample_topic = "Should training clusters >10^26 FLOPs face mandatory third-party audits?"
+
+    # 1. Generate personas with default memory
     agents = manager.generate_personas(
-        topic="Should the government ban AI deepfakes?", 
-        num_agents=2, 
-        custom_instructions="One strict lawyer, one free-speech activist."
+        topic=sample_topic,
+        num_agents=3,
+        custom_instructions="Include one hardware vendor, one open-source researcher, and one EU regulator.",
+        default_memory_type="sliding_window"
     )
+
+    # 2. Customize individual memory strategies
+    agents[0]["memory_config"] = {"type": "summary"}
+    agents[1]["memory_config"] = {"type": "sliding_window", "window_size": 2}
+    agents[2]["memory_config"] = {"type": "full"}
+
+    # 3. Generate directed ring visibility matrix
+    vis_matrix = manager.build_visibility_matrix(agents, topology="ring")
+
+    print("\n[Generated Personas & Custom Memory Profiles]:")
     print(json.dumps(agents, indent=2))
+
+    print("\n[Constructed Graph Visibility Matrix]:")
+    for listener, speakers in vis_matrix.items():
+        print(f"  - '{listener}' listens only to: {speakers}")

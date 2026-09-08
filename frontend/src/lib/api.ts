@@ -86,7 +86,7 @@ let MOCK_HISTORY: DebateHistoryItem[] = [
     },
 ];
 
-// Pool of 6 distinct stakeholder personas
+// Pool of 6 distinct stakeholder personas with default memory_config
 const MOCK_PERSONAS_POOL: Persona[] = [
     {
         name: "Dr. Aris Thorne",
@@ -94,6 +94,7 @@ const MOCK_PERSONAS_POOL: Persona[] = [
         stance: "",
         tone: "Urgent, analytical, assertive",
         avatarSeed: "Thorne",
+        memory_config: { type: "sliding_window", window_size: 4 },
     },
     {
         name: "Sarah Chen",
@@ -101,6 +102,7 @@ const MOCK_PERSONAS_POOL: Persona[] = [
         stance: "",
         tone: "Passionate, evidence-driven, pragmatic",
         avatarSeed: "Sarah",
+        memory_config: { type: "sliding_window", window_size: 4 },
     },
     {
         name: "Marcus Vance",
@@ -108,6 +110,7 @@ const MOCK_PERSONAS_POOL: Persona[] = [
         stance: "",
         tone: "Diplomatic, procedural, balanced",
         avatarSeed: "Marcus",
+        memory_config: { type: "summary", window_size: 4 },
     },
     {
         name: "Dr. Elena Rostova",
@@ -115,6 +118,7 @@ const MOCK_PERSONAS_POOL: Persona[] = [
         stance: "",
         tone: "Rigorous, empirical, skeptical",
         avatarSeed: "Elena",
+        memory_config: { type: "sliding_window", window_size: 4 },
     },
     {
         name: "Tariq Mansour",
@@ -122,6 +126,7 @@ const MOCK_PERSONAS_POOL: Persona[] = [
         stance: "",
         tone: "Strategic, direct, egalitarian",
         avatarSeed: "Tariq",
+        memory_config: { type: "full", window_size: 4 },
     },
     {
         name: "Prof. Hiroshi Tanaka",
@@ -129,6 +134,7 @@ const MOCK_PERSONAS_POOL: Persona[] = [
         stance: "",
         tone: "Measured, philosophical, cautious",
         avatarSeed: "Tanaka",
+        memory_config: { type: "summary", window_size: 4 },
     },
 ];
 
@@ -227,6 +233,23 @@ const DEFAULT_TURNS: DiscussionTurn[] = [
 // 2. API SERVICE METHODS
 // ============================================================================
 export const SimulationAPI = {
+    /**
+     * System Health Check: Neo4j, Postgres, & Backend Service
+     */
+    async checkHealth(): Promise<{ status: string; neo4j: boolean; postgres: boolean; message?: string }> {
+        if (USE_MOCK) {
+            await delay(50);
+            return { status: "healthy", neo4j: true, postgres: true, message: "Mock services active" };
+        }
+        try {
+            const res = await fetch(`${BACKEND_URL}/health`);
+            if (!res.ok) throw new Error(`Health check HTTP error ${res.status}`);
+            return await res.json();
+        } catch (error) {
+            return { status: "unhealthy", neo4j: false, postgres: false, message: String(error) };
+        }
+    },
+
     async getPredefinedTopics(): Promise<PredefinedTopic[]> {
         if (USE_MOCK) {
             await delay(80);
@@ -259,35 +282,46 @@ export const SimulationAPI = {
     },
 
     /**
-     * Generates personas between 2 and 6 agents
+     * Generates personas between 2 and 6 agents with memory configurations
      */
     async generatePersonas(
         topic: string,
         numAgents: number = 3,
-        customPrompt?: string
+        customPrompt?: string,
+        defaultMemoryType: "sliding_window" | "summary" | "full" = "sliding_window"
     ): Promise<Persona[]> {
-        // Clamp strictly between 2 and 6
         const clampedCount = Math.max(2, Math.min(numAgents, 6));
 
         if (USE_MOCK) {
             await delay(400);
-            const selected = MOCK_PERSONAS_POOL.slice(0, clampedCount);
-            return selected;
+            return MOCK_PERSONAS_POOL.slice(0, clampedCount).map((p) => ({
+                ...p,
+                memory_config: { type: defaultMemoryType, window_size: 4 },
+            }));
         }
 
         const res = await fetch(`${BACKEND_URL}/personas/generate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ topic, num_agents: clampedCount, custom_prompt: customPrompt }),
+            body: JSON.stringify({
+                topic,
+                num_agents: clampedCount,
+                custom_prompt: customPrompt,
+                default_memory_type: defaultMemoryType,
+            }),
         });
         if (!res.ok) throw new Error("Failed to generate personas");
         return res.json();
     },
 
+    /**
+     * Starts simulation with visibility matrix and memory strategy
+     */
     async startSimulation(
         topic: string,
         personas: Persona[],
-        memoryStrategy = { type: "sliding_window", window_size: 3 }
+        memoryStrategy = { type: "sliding_window", window_size: 4 },
+        visibilityMatrix?: Record<string, string[]>
     ): Promise<{ simulation_id: string }> {
         if (personas.length < 2) {
             throw new Error("A debate requires at least 2 stakeholder personas.");
@@ -303,7 +337,12 @@ export const SimulationAPI = {
         const res = await fetch(`${BACKEND_URL}/simulations/start`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ topic, personas, memory_strategy: memoryStrategy }),
+            body: JSON.stringify({
+                topic,
+                personas,
+                memory_strategy: memoryStrategy,
+                visibility_matrix: visibilityMatrix,
+            }),
         });
         if (!res.ok) throw new Error("Failed to start simulation");
         return res.json();
@@ -325,69 +364,58 @@ export const SimulationAPI = {
         return res.json();
     },
 
+    /**
+     * Stepping & Continuation Controller:
+     * Advances the simulation by `steps` (default 1) with an optional intervention prompt.
+     */
     async continueSimulation(
         simulationId: string,
-        interventionPrompt?: string
+        interventionPrompt?: string,
+        steps: number = 1
     ): Promise<{ success: boolean; newTurnsCount: number }> {
         if (USE_MOCK) {
             await delay(600);
-            const currentRound = dynamicTurnsQueue.length > 0
-                ? dynamicTurnsQueue[dynamicTurnsQueue.length - 1].round_number + 1
-                : 3;
+            const currentRound =
+                dynamicTurnsQueue.length > 0
+                    ? dynamicTurnsQueue[dynamicTurnsQueue.length - 1].round_number + 1
+                    : 3;
 
-            const extendedTurn1: DiscussionTurn = {
-                id: `turn_ext_${Date.now()}_1`,
-                round_number: currentRound,
-                agent_name: "Dr. Aris Thorne",
-                content: interventionPrompt
-                    ? `Responding to intervention: "${interventionPrompt}" — We must prioritize cryptographic verification at the cluster boundary to resolve this tension.`
-                    : "Reviewing the current concessions, mandatory post-deployment monitoring is still non-negotiable for autonomous agent deployments.",
-                tools_called: [{ name: "search_ai_policy", query: "frontier AI post-deployment safety monitoring" }],
-                retrieved_sources: ["https://en.wikipedia.org/wiki/Artificial_Intelligence_Act"],
-                opinion_snapshot: {
-                    current_stance_score: 2.5,
-                    shift_magnitude: -1.7,
-                    influencer: "Marcus Vance",
-                    reasoning: "Adjusted from strict hardware locks to continuous audit monitors.",
-                    cfg: {
-                        guidance_scale_gamma: 0.45,
-                        shift_magnitude: -1.7,
-                        guidance_vector: 3.2,
-                        dynamic: "Converged Stance",
+            const extendedTurns: DiscussionTurn[] = [];
+            for (let i = 0; i < steps; i++) {
+                const turn: DiscussionTurn = {
+                    id: `turn_ext_${Date.now()}_${i}`,
+                    round_number: currentRound + Math.floor(i / 2),
+                    agent_name: i % 2 === 0 ? "Dr. Aris Thorne" : "Sarah Chen",
+                    content: interventionPrompt && i === 0
+                        ? `Addressing intervention: "${interventionPrompt}" — We must prioritize cryptographic verification at cluster boundaries.`
+                        : `Advancing round discussion step ${i + 1}. Continuing evidence synthesis based on incoming neighbor remarks.`,
+                    tools_called: i % 2 === 0 ? [{ name: "search_ai_policy", query: "frontier safety audit monitoring" }] : [],
+                    retrieved_sources: ["https://en.wikipedia.org/wiki/Artificial_Intelligence_Act"],
+                    opinion_snapshot: {
+                        current_stance_score: i % 2 === 0 ? 2.1 : -0.8,
+                        shift_magnitude: i % 2 === 0 ? -0.4 : 0.6,
+                        influencer: i % 2 === 0 ? "Marcus Vance" : "Dr. Aris Thorne",
+                        reasoning: "Refined stance according to new round evidence.",
+                        cfg: {
+                            guidance_scale_gamma: 0.35,
+                            shift_magnitude: 0.5,
+                            guidance_vector: 2.5,
+                            dynamic: "Adaptive Convergence",
+                        },
                     },
-                },
-                timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            };
+                    timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                };
+                extendedTurns.push(turn);
+            }
 
-            const extendedTurn2: DiscussionTurn = {
-                id: `turn_ext_${Date.now()}_2`,
-                round_number: currentRound,
-                agent_name: "Sarah Chen",
-                content:
-                    "Continuous telemetry auditing aligns with decentralized security principles, provided the monitoring code itself remains open-source and vendor-agnostic.",
-                opinion_snapshot: {
-                    current_stance_score: -0.4,
-                    shift_magnitude: 0.8,
-                    influencer: "Dr. Aris Thorne",
-                    reasoning: "Accepted open-source audit telemetry compromise.",
-                    cfg: {
-                        guidance_scale_gamma: 0.28,
-                        shift_magnitude: 0.8,
-                        guidance_vector: 2.1,
-                        dynamic: "Consensus Building",
-                    },
-                },
-                timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            };
-
-            dynamicTurnsQueue.push(extendedTurn1, extendedTurn2);
-            return { success: true, newTurnsCount: 2 };
+            dynamicTurnsQueue.push(...extendedTurns);
+            return { success: true, newTurnsCount: steps };
         }
 
         const res = await fetch(`${BACKEND_URL}/simulations/${simulationId}/continue`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ intervention: interventionPrompt }),
+            body: JSON.stringify({ intervention: interventionPrompt, steps }),
         });
         if (!res.ok) throw new Error("Failed to continue simulation");
         return res.json();

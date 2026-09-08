@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +24,12 @@ import {
   Trash2,
   X,
   AlertCircle,
+  Network,
+  Eye,
+  EyeOff,
+  Cpu,
+  Activity,
+  Layers,
 } from "lucide-react";
 import { DiscussionTurn, Persona, PredefinedTopic } from "@/types/simulation";
 import { SimulationAPI, getAvatarPath } from "@/lib/api";
@@ -34,12 +40,43 @@ interface DebateArenaProps {
   topic: string;
   isRunning: boolean;
   isConfiguring: boolean;
-  onStartSimulation: () => void;
+  onStartSimulation: (config?: {
+    memoryStrategy: { type: string; window_size: number };
+    visibilityMatrix: Record<string, string[]>;
+  }) => void;
   onUpdateTopic: (topic: string) => void;
   onUpdatePersonas: (personas: Persona[]) => void;
-  onContinueSimulation: (interventionPrompt?: string) => Promise<void>;
+  onContinueSimulation: (
+    interventionPrompt?: string,
+    steps?: number,
+  ) => Promise<void>;
   onOpenConfig: () => void;
 }
+
+// Pure helper: computes default matrix without triggering state effects
+const computeDefaultVisibility = (
+  personas: Persona[],
+  topology: "ring" | "mesh",
+): Record<string, string[]> => {
+  if (personas.length < 2) return {};
+  const matrix: Record<string, string[]> = {};
+  const names = personas.map((p) => p.name);
+
+  if (topology === "ring") {
+    // Directed ring: Person i receives messages from Person (i - 1 + n) % n
+    for (let i = 0; i < names.length; i++) {
+      const listener = names[i];
+      const speaker = names[(i - 1 + names.length) % names.length];
+      matrix[listener] = [speaker];
+    }
+  } else if (topology === "mesh") {
+    // Everyone listens to everyone
+    for (const listener of names) {
+      matrix[listener] = names.filter((s) => s !== listener);
+    }
+  }
+  return matrix;
+};
 
 export const DebateArena: React.FC<DebateArenaProps> = ({
   turns,
@@ -59,28 +96,59 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
   const [llmPrompt, setLlmPrompt] = useState<string>("");
   const [isGeneratingPersonas, setIsGeneratingPersonas] = useState(false);
 
+  // System Health Status
+  const [healthStatus, setHealthStatus] = useState<string>("checking...");
+
   // Custom Persona Form State
   const [showCustomPersonaForm, setShowCustomPersonaForm] = useState(false);
   const [customName, setCustomName] = useState("");
   const [customBackground, setCustomBackground] = useState("");
   const [customTone, setCustomTone] = useState("");
 
-  // Intervention State
+  // Memory & Visibility Matrix Configuration
+  const [globalMemoryType, setGlobalMemoryType] = useState<
+    "sliding_window" | "summary" | "full"
+  >("sliding_window");
+  const [topologyMode, setTopologyMode] = useState<"ring" | "mesh" | "custom">(
+    "ring",
+  );
+  const [customVisibilityMatrix, setCustomVisibilityMatrix] = useState<
+    Record<string, string[]>
+  >({});
+  const [showVisibilityEditor, setShowVisibilityEditor] = useState(false);
+
+  // Stepping & Continuation Controller State
   const [interventionText, setInterventionText] = useState("");
+  const [selectedSteps, setSelectedSteps] = useState<number>(1);
   const [isContinuing, setIsContinuing] = useState(false);
 
+  // Health check & predefined topics on mount
   useEffect(() => {
+    SimulationAPI.checkHealth()
+      .then((res) =>
+        setHealthStatus(
+          res.status === "healthy" ? "All systems active" : "Warning: degraded",
+        ),
+      )
+      .catch(() => setHealthStatus("Offline / Mock"));
+
     SimulationAPI.getPredefinedTopics()
       .then(setPredefinedTopics)
       .catch((err) => console.error("Failed to load topics:", err));
   }, []);
 
-  // Handler: Selecting a predefined topic updates topic WITHOUT clearing existing custom personas
+  // Compute active matrix using useMemo (prevents cascading re-renders)
+  const activeVisibilityMatrix = useMemo(() => {
+    if (topologyMode === "custom") {
+      return customVisibilityMatrix;
+    }
+    return computeDefaultVisibility(personas, topologyMode);
+  }, [personas, topologyMode, customVisibilityMatrix]);
+
   const handleTopicSelect = (newTopic: string) => {
     onUpdateTopic(newTopic);
   };
 
-  // Handler: Explicitly regenerate personas for current topic & count
   const handleRegenerateForTopic = async (count: number) => {
     setIsGeneratingPersonas(true);
     try {
@@ -88,6 +156,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
         topic,
         count,
         llmPrompt,
+        globalMemoryType,
       );
       onUpdatePersonas(generated);
     } catch (err) {
@@ -97,7 +166,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
     }
   };
 
-  // Handler: Add Custom Persona (capped at 6)
   const handleAddCustomPersona = (e: React.FormEvent) => {
     e.preventDefault();
     if (personas.length >= 6) return;
@@ -109,6 +177,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
       tone: customTone.trim() || "Objective, analytical",
       stance: "",
       avatarSeed: customName.trim(),
+      memory_config: { type: globalMemoryType, window_size: 4 },
     };
 
     onUpdatePersonas([...personas, newPersona]);
@@ -118,21 +187,60 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
     setShowCustomPersonaForm(false);
   };
 
-  // Handler: Remove individual persona
   const handleRemovePersona = (indexToRemove: number) => {
     onUpdatePersonas(personas.filter((_, idx) => idx !== indexToRemove));
   };
 
-  // Handler: Continue debate
+  // Toggle visibility: Can listener hear speaker?
+  const toggleVisibility = (listener: string, speaker: string) => {
+    const base =
+      topologyMode === "custom"
+        ? customVisibilityMatrix
+        : activeVisibilityMatrix;
+    const currentAllowed = base[listener] || [];
+    const updatedAllowed = currentAllowed.includes(speaker)
+      ? currentAllowed.filter((s) => s !== speaker)
+      : [...currentAllowed, speaker];
+
+    setCustomVisibilityMatrix({
+      ...base,
+      [listener]: updatedAllowed,
+    });
+    setTopologyMode("custom");
+  };
+
+  // Cycle memory type for an individual persona
+  const cyclePersonaMemory = (idx: number) => {
+    const memoryOrder = ["sliding_window", "summary", "full"];
+    const updated = [...personas];
+    const current = updated[idx].memory_config?.type || globalMemoryType;
+    const nextIdx = (memoryOrder.indexOf(current) + 1) % memoryOrder.length;
+    updated[idx] = {
+      ...updated[idx],
+      memory_config: {
+        type: memoryOrder[nextIdx],
+        window_size: 4,
+      },
+    };
+    onUpdatePersonas(updated);
+  };
+
   const handleContinue = async () => {
     if (isContinuing) return;
     setIsContinuing(true);
     try {
-      await onContinueSimulation(interventionText);
+      await onContinueSimulation(interventionText, selectedSteps);
       setInterventionText("");
     } finally {
       setIsContinuing(false);
     }
+  };
+
+  const handleLaunchSimulation = () => {
+    onStartSimulation({
+      memoryStrategy: { type: globalMemoryType, window_size: 4 },
+      visibilityMatrix: activeVisibilityMatrix,
+    });
   };
 
   const getAgentAvatar = (name: string): string => {
@@ -142,7 +250,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
 
   const currentRound =
     turns.length > 0 ? turns[turns.length - 1].round_number : 0;
-
   const canStart = !isRunning && personas.length >= 2 && personas.length <= 6;
 
   // ==========================================================================
@@ -150,23 +257,32 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
   // ==========================================================================
   if (isConfiguring || (turns.length === 0 && !isRunning)) {
     return (
-      <div className="flex flex-col h-full bg-background/50 overflow-y-auto p-6 scrollbar-thin">
-        <div className="max-w-3xl w-full mx-auto space-y-6">
-          {/* Header */}
-          <div className="text-center space-y-2">
-            <Badge
-              variant="outline"
-              className="border-teal-500/30 text-teal-700 dark:text-teal-300 px-2.5 py-0.5"
-            >
-              <Sparkles className="w-3 h-3 mr-1 text-teal-500" />
-              Graph Deliberation Engine
-            </Badge>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Configure Autonomous Debate
+      <div className="flex flex-col h-full bg-background/50 overflow-y-auto p-4 sm:p-6 scrollbar-thin">
+        <div className="max-w-4xl w-full mx-auto space-y-5">
+          {/* Header & Health Status */}
+          <div className="text-center space-y-1.5">
+            <div className="flex items-center justify-center gap-2">
+              <Badge
+                variant="outline"
+                className="border-teal-500/30 text-teal-700 dark:text-teal-300 px-2.5 py-0.5"
+              >
+                <Sparkles className="w-3 h-3 mr-1 text-teal-500" />
+                Multi-Agent Discussion Engine
+              </Badge>
+              <Badge
+                variant="secondary"
+                className="text-[10px] text-muted-foreground flex items-center gap-1"
+              >
+                <Activity className="w-2.5 h-2.5 text-emerald-500" />
+                {healthStatus}
+              </Badge>
+            </div>
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+              Configure Autonomous Deliberation
             </h1>
             <p className="text-xs text-muted-foreground max-w-lg mx-auto">
-              Select or formulate a topic, configure 2 to 6 stakeholder nodes,
-              and start the graph-grounded debate.
+              Select topic, configure communication graph edges, and customize
+              agent memory models.
             </p>
           </div>
 
@@ -178,18 +294,18 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 1. Deliberation Topic
               </span>
               <span className="text-[10px] text-muted-foreground">
-                Personas stay saved when changing topic
+                Personas preserved when switching topics
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {predefinedTopics.map((pt) => {
                 const isSelected = topic === pt.title;
                 return (
                   <div
                     key={pt.id}
                     onClick={() => handleTopicSelect(pt.title)}
-                    className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                    className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
                       isSelected
                         ? "bg-teal-50/80 dark:bg-teal-950/40 border-teal-500 text-teal-950 dark:text-teal-200 shadow-2xs"
                         : "bg-muted/30 border-border/60 hover:bg-muted/60 text-foreground"
@@ -219,19 +335,163 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 rows={2}
                 value={topic}
                 onChange={(e) => onUpdateTopic(e.target.value)}
-                placeholder="Type any AI regulation or governance question..."
+                placeholder="Type any AI governance question..."
                 className="w-full text-xs p-2.5 rounded-md bg-background border border-border/80 text-foreground focus:outline-none focus:ring-1 focus:ring-teal-500 transition-all resize-none"
               />
             </div>
           </Card>
 
-          {/* 2. Stakeholders Management (Limit: 2 to 6) */}
+          {/* 2. Communication Topology & Visibility Matrix */}
+          <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
+                <Network className="w-3.5 h-3.5" />
+                2. Graph Topology & Visibility
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowVisibilityEditor((prev) => !prev)}
+                className="h-6 text-[10px] text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/50 p-1"
+              >
+                {showVisibilityEditor
+                  ? "Hide Matrix"
+                  : "Customize Edge Visibility"}
+              </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-muted-foreground font-medium">
+                Topology:
+              </span>
+              <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-md border border-border/70">
+                <button
+                  type="button"
+                  onClick={() => setTopologyMode("ring")}
+                  className={`px-3 py-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                    topologyMode === "ring"
+                      ? "bg-teal-600 text-white"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Directed Ring (A → B → C → A)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTopologyMode("mesh")}
+                  className={`px-3 py-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                    topologyMode === "mesh"
+                      ? "bg-teal-600 text-white"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Full Mesh (All see All)
+                </button>
+                {topologyMode === "custom" && (
+                  <Badge
+                    variant="outline"
+                    className="text-[9px] border-amber-500 text-amber-500"
+                  >
+                    Custom Matrix
+                  </Badge>
+                )}
+              </div>
+            </div>
+
+            {/* Visibility Matrix Editor */}
+            {showVisibilityEditor && personas.length >= 2 && (
+              <div className="p-3 bg-muted/20 border border-border/60 rounded-md space-y-2 animate-in fade-in">
+                <p className="text-[10px] text-muted-foreground">
+                  Toggle an eye icon to show/hide messages between specific
+                  agents:
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px] border-collapse">
+                    <thead>
+                      <tr className="border-b border-border/50 text-left text-muted-foreground">
+                        <th className="p-1.5 font-medium">Listener</th>
+                        {personas.map((speaker) => (
+                          <th
+                            key={speaker.name}
+                            className="p-1.5 font-medium text-center truncate max-w-[90px]"
+                          >
+                            {speaker.name.split(" ")[0]}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {personas.map((listener) => (
+                        <tr
+                          key={listener.name}
+                          className="border-b border-border/30 hover:bg-muted/30"
+                        >
+                          <td className="p-1.5 font-semibold text-foreground truncate max-w-[130px]">
+                            {listener.name}
+                          </td>
+                          {personas.map((speaker) => {
+                            if (speaker.name === listener.name) {
+                              return (
+                                <td
+                                  key={speaker.name}
+                                  className="p-1.5 text-center text-muted-foreground/40 font-mono"
+                                >
+                                  self
+                                </td>
+                              );
+                            }
+                            const isAllowed = (
+                              activeVisibilityMatrix[listener.name] || []
+                            ).includes(speaker.name);
+                            return (
+                              <td
+                                key={speaker.name}
+                                className="p-1.5 text-center"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    toggleVisibility(
+                                      listener.name,
+                                      speaker.name,
+                                    )
+                                  }
+                                  className={`p-1.5 rounded cursor-pointer transition-all ${
+                                    isAllowed
+                                      ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
+                                      : "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+                                  }`}
+                                  title={
+                                    isAllowed
+                                      ? `${listener.name} can hear ${speaker.name}`
+                                      : `${speaker.name} is hidden from ${listener.name}`
+                                  }
+                                >
+                                  {isAllowed ? (
+                                    <Eye className="w-3 h-3" />
+                                  ) : (
+                                    <EyeOff className="w-3 h-3" />
+                                  )}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* 3. Stakeholders & Per-Agent Memory (1-col on mobile, 2-col / 2x2 on desktop) */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
                   <Bot className="w-3.5 h-3.5" />
-                  2. Stakeholder Personas ({personas.length}/6 Nodes)
+                  3. Stakeholders ({personas.length}/6 Nodes)
                 </span>
                 {personas.length < 2 && (
                   <Badge
@@ -244,7 +504,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               </div>
 
               <div className="flex items-center gap-2">
-                {/* Agent Count Selector (Supports 2, 3, 4, 5, 6) */}
                 <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-md border border-border/70">
                   <span className="text-[10px] text-muted-foreground px-1 font-medium">
                     Preset:
@@ -258,25 +517,18 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                           ? "bg-teal-600 text-white shadow-2xs"
                           : "text-muted-foreground hover:text-foreground"
                       }`}
-                      title={`Generate ${count} stakeholders`}
                     >
                       {count}
                     </button>
                   ))}
                 </div>
 
-                {/* Custom Persona Button (Disabled when 6 reached) */}
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={personas.length >= 6}
                   onClick={() => setShowCustomPersonaForm((prev) => !prev)}
-                  className="h-7 px-2 text-xs border-teal-500/40 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 cursor-pointer disabled:opacity-50"
-                  title={
-                    personas.length >= 6
-                      ? "Max 6 personas reached"
-                      : "Add custom persona"
-                  }
+                  className="h-7 px-2 text-xs border-teal-500/40 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 cursor-pointer"
                 >
                   <UserPlus className="w-3.5 h-3.5 mr-1" />
                   Custom
@@ -284,23 +536,49 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               </div>
             </div>
 
+            {/* Global Memory Selector */}
+            <div className="flex items-center justify-between p-2 rounded-md bg-muted/30 border border-border/50">
+              <div className="flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                <span className="text-xs font-medium text-foreground">
+                  Global Memory Default:
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                {(["sliding_window", "summary", "full"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setGlobalMemoryType(m)}
+                    className={`text-[10px] px-2 py-0.5 rounded capitalize font-medium transition-all cursor-pointer ${
+                      globalMemoryType === m
+                        ? "bg-teal-600 text-white shadow-xs"
+                        : "text-muted-foreground hover:text-foreground bg-background border border-border/60"
+                    }`}
+                  >
+                    {m.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Custom Persona Form */}
             {showCustomPersonaForm && (
               <form
                 onSubmit={handleAddCustomPersona}
-                className="p-3 rounded-lg bg-teal-50/50 dark:bg-teal-950/30 border border-teal-500/30 space-y-2.5 animate-in fade-in duration-200"
+                className="p-3.5 rounded-lg bg-teal-50/50 dark:bg-teal-950/30 border border-teal-500/30 space-y-2.5 animate-in fade-in duration-200"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold text-teal-800 dark:text-teal-300 flex items-center gap-1.5">
-                    <UserPlus className="w-3 h-3" />
-                    Add Custom Stakeholder Persona ({personas.length}/6)
+                  <span className="text-xs font-semibold text-teal-800 dark:text-teal-300 flex items-center gap-1.5">
+                    <UserPlus className="w-3.5 h-3.5" />
+                    Add Stakeholder Persona ({personas.length}/6)
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowCustomPersonaForm(false)}
                     className="text-muted-foreground hover:text-foreground p-0.5 cursor-pointer"
                   >
-                    <X className="w-3 h-3" />
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
@@ -325,7 +603,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     <input
                       type="text"
                       required
-                      placeholder="e.g. Hardware Security Officer, Confidential Computing Consortium"
+                      placeholder="e.g. Open Source Architect, Confidential Computing Consortium"
                       value={customBackground}
                       onChange={(e) => setCustomBackground(e.target.value)}
                       className="w-full text-xs px-2.5 py-1.5 rounded-md bg-background border border-border/80 text-foreground focus:outline-none focus:ring-1 focus:ring-teal-500"
@@ -337,7 +615,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                   <div className="flex-1">
                     <input
                       type="text"
-                      placeholder="Tone (e.g. Skeptical, rigorous, empirical)"
+                      placeholder="Tone (e.g. Skeptical, empirical, rigorous)"
                       value={customTone}
                       onChange={(e) => setCustomTone(e.target.value)}
                       className="w-full text-xs px-2.5 py-1.5 rounded-md bg-background border border-border/80 text-foreground focus:outline-none focus:ring-1 focus:ring-teal-500"
@@ -346,7 +624,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                   <Button
                     type="submit"
                     size="sm"
-                    className="h-7 text-xs bg-teal-600 hover:bg-teal-700 text-white dark:bg-teal-500 dark:text-teal-950 cursor-pointer"
+                    className="h-8 text-xs bg-teal-600 hover:bg-teal-700 text-white dark:bg-teal-500 dark:text-teal-950 cursor-pointer"
                   >
                     Add to Debate
                   </Button>
@@ -360,7 +638,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 type="text"
                 value={llmPrompt}
                 onChange={(e) => setLlmPrompt(e.target.value)}
-                placeholder="Give prompt to LLM (e.g., 'Include an open-source hacker and an EU AI Act auditor')..."
+                placeholder="Prompt LLM to tailor personas (e.g., 'Include an AI safety auditor and an open-source hacker')..."
                 className="flex-1 text-xs px-3 py-2 rounded-md bg-background border border-border/80 text-foreground focus:outline-none focus:ring-1 focus:ring-teal-500"
               />
               <Button
@@ -371,65 +649,89 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 className="text-xs border-teal-500/40 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 shrink-0 cursor-pointer"
               >
                 <Wand2 className="w-3.5 h-3.5 mr-1 text-teal-500" />
-                {isGeneratingPersonas ? "Generating..." : "Generate with LLM"}
+                {isGeneratingPersonas ? "Generating..." : "Generate"}
               </Button>
             </div>
 
-            {/* Persona Preview Cards (Without Stance) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
-              {personas.map((persona, idx) => (
-                <div
-                  key={`${persona.name}-${idx}`}
-                  className="p-2.5 rounded-md bg-muted/30 border border-border/60 flex flex-col justify-between gap-2 group relative transition-all hover:border-teal-500/30"
-                >
-                  <div className="flex items-start gap-2">
-                    <Avatar className="w-9 h-9 border border-teal-500/30 shrink-0">
-                      <AvatarImage
-                        src={getAvatarPath(idx)}
-                        alt={persona.name}
-                      />
-                      <AvatarFallback>
-                        {persona.name.substring(0, 2)}
-                      </AvatarFallback>
-                    </Avatar>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-semibold text-foreground truncate">
-                          {persona.name}
-                        </h4>
-                        <button
-                          onClick={() => handleRemovePersona(idx)}
-                          className="opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 p-1 rounded transition-all text-muted-foreground cursor-pointer"
-                          title="Remove persona"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
+            {/* PERSONA PREVIEW: 1-col on mobile, 2-col (2x2) on desktop */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+              {personas.map((persona, idx) => {
+                const memType = persona.memory_config?.type || globalMemoryType;
+                return (
+                  <div
+                    key={`${persona.name}-${idx}`}
+                    className="p-3.5 rounded-xl bg-card border border-border/80 flex flex-col justify-between gap-2.5 shadow-2xs hover:border-teal-500/40 transition-all"
+                  >
+                    {/* Top Row: Avatar + Name + Delete */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Avatar className="w-10 h-10 border border-teal-500/30 shrink-0 shadow-xs">
+                          <AvatarImage
+                            src={getAvatarPath(idx)}
+                            alt={persona.name}
+                          />
+                          <AvatarFallback>
+                            {persona.name.substring(0, 2)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <h4 className="text-xs font-bold text-foreground truncate">
+                            {persona.name}
+                          </h4>
+                          <span className="text-[10px] text-muted-foreground block truncate">
+                            Node {idx + 1}
+                          </span>
+                        </div>
                       </div>
-                      <Badge
-                        variant="secondary"
-                        className="text-[9px] px-1 py-0 h-3.5 bg-muted text-muted-foreground border-none font-normal"
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePersona(idx)}
+                        className="text-muted-foreground/60 hover:text-destructive p-1 rounded transition-colors cursor-pointer shrink-0"
+                        title="Remove persona"
                       >
-                        {persona.tone}
-                      </Badge>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Middle: Background */}
+                    <p className="text-xs text-foreground/80 leading-relaxed line-clamp-3 bg-muted/20 p-2.5 rounded-lg border border-border/40">
+                      {persona.background}
+                    </p>
+
+                    {/* Dedicated Footer: Full Width (Zero Tag Overflow) */}
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40 text-[10px]">
+                      <span
+                        className="text-muted-foreground truncate max-w-[65%]"
+                        title={persona.tone}
+                      >
+                        Tone:{" "}
+                        <span className="font-medium text-foreground">
+                          {persona.tone}
+                        </span>
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => cyclePersonaMemory(idx)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-700 dark:text-teal-300 hover:bg-teal-500/20 border border-teal-500/30 font-mono text-[9px] cursor-pointer shrink-0"
+                        title="Click to toggle memory strategy"
+                      >
+                        <Layers className="w-2.5 h-2.5" />
+                        {memType.replace("_", " ")}
+                      </button>
                     </div>
                   </div>
-
-                  <p className="text-[11px] text-foreground/80 leading-snug line-clamp-2 bg-background/60 p-1.5 rounded border border-border/40">
-                    {persona.background}
-                  </p>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
-            {/* Minimum 2 Warning Notice */}
             {personas.length < 2 && (
-              <div className="p-2 rounded-md bg-rose-50 dark:bg-rose-950/30 border border-rose-500/30 flex items-center gap-2 text-rose-800 dark:text-rose-300 text-xs">
+              <div className="p-2.5 rounded-md bg-rose-50 dark:bg-rose-950/30 border border-rose-500/30 flex items-center gap-2 text-rose-800 dark:text-rose-300 text-xs">
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
                 <span>
-                  A multi-agent debate requires at least{" "}
-                  <strong>2 agents</strong> (1 vs 1) to form graph communication
-                  edges.
+                  A debate requires at least 2 agents to construct graph
+                  communication channels.
                 </span>
               </div>
             )}
@@ -438,7 +740,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
           {/* Launch Debate Action */}
           <div className="pt-2">
             <Button
-              onClick={onStartSimulation}
+              onClick={handleLaunchSimulation}
               disabled={!canStart}
               className="w-full h-11 text-sm font-semibold bg-teal-600 hover:bg-teal-700 text-white dark:bg-teal-500 dark:hover:bg-teal-400 dark:text-teal-950 shadow-md transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -446,8 +748,8 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               {isRunning
                 ? "Starting Simulation..."
                 : personas.length < 2
-                  ? "At least 2 Agents Required to Start"
-                  : `Start Graph Simulation (${personas.length} Agents)`}
+                  ? "At least 2 Agents Required"
+                  : `Start Graph Simulation (${personas.length} Agents, ${topologyMode.toUpperCase()} Topology)`}
             </Button>
           </div>
         </div>
@@ -584,15 +886,32 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
         </div>
       </ScrollArea>
 
-      {/* Intervention Bar */}
+      {/* Stepping & Intervention Controller Bar */}
       <div className="p-3 border-t border-border/60 bg-background/80 backdrop-blur">
         <div className="max-w-3xl mx-auto flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-muted/60 p-1 rounded-md border border-border/70 shrink-0">
+            {[1, 2, 3].map((step) => (
+              <button
+                key={step}
+                type="button"
+                onClick={() => setSelectedSteps(step)}
+                className={`px-2 py-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                  selectedSteps === step
+                    ? "bg-teal-600 text-white shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                +{step} Step{step > 1 ? "s" : ""}
+              </button>
+            ))}
+          </div>
+
           <input
             type="text"
             value={interventionText}
             onChange={(e) => setInterventionText(e.target.value)}
             disabled={isRunning || isContinuing}
-            placeholder="Inject human intervention prompt (e.g. 'How would compute verification impact open-source startups?')..."
+            placeholder="Inject human intervention prompt (optional)..."
             className="flex-1 text-xs px-3 py-2 rounded-md bg-card border border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-teal-500"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -609,11 +928,13 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             className="h-8 px-3 text-xs bg-teal-600 hover:bg-teal-700 text-white dark:bg-teal-500 dark:hover:bg-teal-400 dark:text-teal-950 font-medium cursor-pointer shrink-0"
           >
             {isContinuing ? (
-              <span>Expanding...</span>
+              <span>Stepping...</span>
             ) : (
               <>
                 <PlusCircle className="w-3.5 h-3.5 mr-1" />
-                <span>Continue Round</span>
+                <span>
+                  Advance {selectedSteps} Step{selectedSteps > 1 ? "s" : ""}
+                </span>
               </>
             )}
           </Button>

@@ -5,69 +5,115 @@ from src.clients.postgres import PostgresClient
 
 
 class ConversationContextManager:
-    def __init__(self, simulation_id: str, topic: str, strategy: Dict[str, Any]):
+    def __init__(self, simulation_id: str, topic: str, strategy: Optional[Dict[str, Any]] = None):
         self.simulation_id: str = simulation_id
         self.topic: str = topic
-        self.strategy_type: str = str(strategy.get("type", "all"))  # "all", "sliding_window", "summary"
-        self.window_size: int = int(strategy.get("window_size", 5))
-        self.db = PostgresClient()
         
-        # Initialized on-demand or if strategy is summary
+        # Strategy fallback to 'sliding_window' if not provided
+        strat = strategy or {"type": "sliding_window", "window_size": 4}
+        raw_type = str(strat.get("type", "sliding_window")).lower()
+        
+        # Normalize strategy names
+        self.strategy_type: str = "full" if raw_type in ["all", "full"] else raw_type
+        self.window_size: int = int(strat.get("window_size", 4))
+        
+        self.db = PostgresClient()
         self.summarizer_llm: Optional[LLMClient] = (
             LLMClient() if self.strategy_type == "summary" else None
         )
 
     def _fetch_history(self) -> List[Dict[str, Any]]:
-        """Fetches raw discussion turns and converts them to standard dictionaries."""
+        """Fetches raw discussion turns in chronological order."""
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT agent_name, content 
+                    SELECT agent_name, role, content, round_number 
                     FROM discussion_history 
                     WHERE simulation_id = %s 
                     ORDER BY round_number ASC, id ASC
                 """, (self.simulation_id,))
                 rows = cur.fetchall()
-                # Explicit conversion to dict satisfies Pylance strict type checking
                 return [dict(row) for row in rows]
 
-    def build_context_for_agent(self, system_prompt: str) -> List[Dict[str, Any]]:
+    def build_context_for_agent(
+        self, 
+        system_prompt: str,
+        current_agent_name: Optional[str] = None,
+        allowed_speakers: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Fetches the discussion history from Postgres and applies the selected memory strategy.
-        Returns the formatted list of messages ready for the Agent's ReAct loop.
+        Builds contextual messages for an agent.
+        
+        Args:
+            system_prompt: The agent's base instructions.
+            current_agent_name: Name of the current speaking agent.
+            allowed_speakers: List of agent names this agent is allowed to see.
+                              If None, all messages are visible (used by moderator).
         """
         raw_history: List[Dict[str, Any]] = self._fetch_history()
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-        # If no history yet, just return the system prompt
         if not raw_history:
             return messages
 
-        # 1. Strategy: All (Full conversation context)
-        if self.strategy_type == "all":
-            for row in raw_history:
+        # =========================================================================
+        # 1. VISIBILITY FILTER (Graph Routing)
+        # Keep message IF:
+        #   - It belongs to current_agent (they always remember their own words)
+        #   - OR sender is inside allowed_speakers (visible graph edge)
+        # =========================================================================
+        if allowed_speakers is not None and current_agent_name is not None:
+            permitted_set = set(allowed_speakers)
+            permitted_set.add(current_agent_name)
+
+            filtered_history = [
+                row for row in raw_history
+                if row.get("agent_name") in permitted_set
+            ]
+        else:
+            filtered_history = raw_history
+
+        if not filtered_history:
+            return messages
+
+        # =========================================================================
+        # 2. APPLY AGENT'S SPECIFIC MEMORY STRATEGY
+        # =========================================================================
+
+        # STRATEGY 1: FULL MEMORY (All visible turns)
+        if self.strategy_type == "full":
+            for row in filtered_history:
                 name = str(row.get("agent_name", "Unknown"))
                 content = str(row.get("content", ""))
-                messages.append({"role": "user", "content": f"{name} said: {content}"})
+                if name == current_agent_name:
+                    messages.append({"role": "assistant", "content": content})
+                else:
+                    messages.append({"role": "user", "content": f"[{name}]: {content}"})
 
-        # 2. Strategy: Sliding Window (Only last N turns)
+        # STRATEGY 2: SLIDING WINDOW (Only last N visible turns)
         elif self.strategy_type == "sliding_window":
-            recent_history = raw_history[-self.window_size:]
+            recent_history = filtered_history[-self.window_size:]
             for row in recent_history:
                 name = str(row.get("agent_name", "Unknown"))
                 content = str(row.get("content", ""))
-                messages.append({"role": "user", "content": f"{name} said: {content}"})
+                if name == current_agent_name:
+                    messages.append({"role": "assistant", "content": content})
+                else:
+                    messages.append({"role": "user", "content": f"[{name}]: {content}"})
 
-        # 3. Strategy: LLM Summarization (Summarize older turns, keep last 2 verbatim)
+        # STRATEGY 3: SUMMARY (Summarize older turns, keep last 2 verbatim)
         elif self.strategy_type == "summary":
-            if len(raw_history) <= 3:
-                for row in raw_history:
+            if len(filtered_history) <= 3:
+                for row in filtered_history:
                     name = str(row.get("agent_name", "Unknown"))
                     content = str(row.get("content", ""))
-                    messages.append({"role": "user", "content": f"{name} said: {content}"})
+                    if name == current_agent_name:
+                        messages.append({"role": "assistant", "content": content})
+                    else:
+                        messages.append({"role": "user", "content": f"[{name}]: {content}"})
             else:
-                older_history = raw_history[:-2]
-                recent_history = raw_history[-2:]
+                older_history = filtered_history[:-2]
+                recent_history = filtered_history[-2:]
 
                 history_text = "\n".join([
                     f"{r.get('agent_name', 'Unknown')}: {r.get('content', '')}"
@@ -80,7 +126,6 @@ class ConversationContextManager:
                     raw_history=history_text
                 )
 
-                # Type-safety guard to satisfy Pylance reportOptionalMemberAccess
                 if self.summarizer_llm is None:
                     self.summarizer_llm = LLMClient()
 
@@ -91,12 +136,15 @@ class ConversationContextManager:
 
                 messages.append({
                     "role": "system", 
-                    "content": f"PREVIOUS CONVERSATION SUMMARY:\n{summary_content}"
+                    "content": f"PREVIOUS DISCUSSION SUMMARY:\n{summary_content}"
                 })
 
                 for row in recent_history:
                     name = str(row.get("agent_name", "Unknown"))
                     content = str(row.get("content", ""))
-                    messages.append({"role": "user", "content": f"{name} said: {content}"})
+                    if name == current_agent_name:
+                        messages.append({"role": "assistant", "content": content})
+                    else:
+                        messages.append({"role": "user", "content": f"[{name}]: {content}"})
 
         return messages

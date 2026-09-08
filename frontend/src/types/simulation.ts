@@ -1,9 +1,15 @@
+export interface PersonaMemoryConfig {
+    type: "sliding_window" | "summary" | "full" | string;
+    window_size?: number;
+}
+
 export interface Persona {
     name: string;
     background: string;
     stance: string;
     tone: string;
     avatarSeed: string; // Used for unique deterministic avatars
+    memory_config?: PersonaMemoryConfig;
 }
 
 export interface CFGMetrics {

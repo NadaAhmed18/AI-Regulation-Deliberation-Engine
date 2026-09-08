@@ -12,10 +12,16 @@ class SetupManager:
         self.llm = LLMClient()
 
     @observe(as_type="generation", name="generate_personas")
-    def generate_personas(self, topic: str, num_agents: int = 3, custom_instructions: str = "") -> List[Dict[str, Any]]:
+    def generate_personas(
+        self, 
+        topic: str, 
+        num_agents: int = 3, 
+        custom_instructions: str = "",
+        default_memory_type: str = "sliding_window"
+    ) -> List[Dict[str, Any]]:
         """
         Dynamically generates N distinct personas for the debate based on the topic.
-        Returns a validated list of persona dictionaries.
+        Attaches an individual memory_config to each persona.
         """
         print(f"[*] Generating {num_agents} dynamic personas for topic: '{topic}'...")
 
@@ -34,30 +40,28 @@ class SetupManager:
         response = self.llm.generate_response(messages, response_format="json_object")
         content = response.get("content", "")
 
-        # Safe JSON Extraction (Handles cases where LLM wraps output in ```json ... ```)
         try:
-            # Try parsing raw first
             personas = json.loads(content)
         except json.JSONDecodeError:
-            # Fallback: Extract JSON array using regex
             match = re.search(r'\[.*\]', content, re.DOTALL)
             if match:
-                try:
-                    personas = json.loads(match.group(0))
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Failed to parse personas JSON from LLM: {e}")
+                personas = json.loads(match.group(0))
             else:
                 raise ValueError("LLM did not return a recognizable JSON array.")
 
-        # Validation to ensure the LLM followed the schema
         required_keys = {"name", "background", "stance", "tone"}
         for i, p in enumerate(personas):
             if not isinstance(p, dict) or not required_keys.issubset(p.keys()):
                 raise ValueError(f"Persona at index {i} is missing required keys: {required_keys}")
-            
-            # Auto-assign a baseline opinion score for the Opinion Grader later
-            # (Assuming the LLM created diverse views, we'll start them dynamically)
-            print(f"[+] Generated Persona: {p['name']} ({p['tone']})")
+
+            # Assign individual memory configuration to each agent
+            if "memory_config" not in p:
+                p["memory_config"] = {
+                    "type": default_memory_type,  # 'sliding_window', 'summary', or 'full'
+                    "window_size": 4
+                }
+
+            print(f"[+] Generated Persona: {p['name']} ({p['tone']}) | Memory: {p['memory_config']['type']}")
 
         return personas
 

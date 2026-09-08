@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Week 3 Multi-Agent Flow Comparison</title>
+<style>
+  body {
+    background-color: #0b1120;
+    color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 { font-size: 24px; margin-bottom: 8px; color: #38bdf8; }
+  p.subtitle { margin-top: 0; color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
+  
+  .container {
+    display: flex;
+    gap: 28px;
+    width: 100%;
+    max-width: 1200px;
+    justify-content: center;
+  }
+  
+  .card {
+    flex: 1;
+    background: #1e293b;
+    border-radius: 12px;
+    border: 1px solid #334155;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  }
+  
+  .card.wanted { border-color: #0284c7; }
+  .card.current { border-color: #e11d48; }
+
+  .badge {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .badge.current { background: #fda4af; color: #881337; }
+  .badge.wanted { background: #bae6fd; color: #0369a1; }
+
+  .card-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    align-self: flex-start;
+  }
+  .card-desc {
+    font-size: 12px;
+    color: #94a3b8;
+    align-self: flex-start;
+    margin-bottom: 16px;
+    line-height: 1.4;
+  }
+
+  svg {
+    width: 100%;
+    height: 380px;
+    background: #0f172a;
+    border-radius: 8px;
+    border: 1px solid #1e293b;
+  }
+
+  /* Node styling */
+  .node-box { fill: #1e293b; stroke-width: 2; rx: 8; }
+  .node-text { fill: #f8fafc; font-size: 12px; font-weight: 600; text-anchor: middle; }
+  .node-sub { fill: #94a3b8; font-size: 10px; text-anchor: middle; }
+
+  /* Controls */
+  .controls {
+    margin-top: 20px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  button {
+    background: #0284c7;
+    color: white;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #0369a1; }
+  .status-pill {
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: #1e293b;
+    border: 1px solid #334155;
+    font-size: 13px;
+    color: #38bdf8;
+    font-family: monospace;
+  }
+  
+  /* Explanation notes */
+  .flaw-box {
+    margin-top: 14px;
+    background: #450a0a;
+    border: 1px solid #7f1d1d;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #fecaca;
+    width: 95%;
+  }
+  .win-box {
+    margin-top: 14px;
+    background: #082f49;
+    border: 1px solid #075985;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #bae6fd;
+    width: 95%;
+  }
+</style>
+</head>
+<body>
+
+  <h1>Week 3 Discussion Flow Architecture</h1>
+  <p class="subtitle">Comparing current backend execution vs. Qubeterra Week 3 Requirements</p>
+
+  <div class="container">
+    
+    <!-- CURRENT FLOW -->
+    <div class="card current">
+      <span class="badge current">Current Code</span>
+      <div class="card-title">Centralized Broadcast Model</div>
+      <div class="card-desc">
+        Moderator picks 1 speaker at random. Agent queries entire Postgres history (broadcast).<br>
+        <code>current_round++</code> happens per single turn (3 turns total = debate ends).
+      </div>
+
+      <svg id="svgCurrent" viewBox="0 0 500 380">
+        <!-- Database Center -->
+        <rect x="180" y="150" width="140" height="50" rx="6" fill="#334155" stroke="#64748b" stroke-width="1.5"/>
+        <text x="250" y="172" class="node-text">Postgres DB</text>
+        <text x="250" y="188" class="node-sub">Global Flat History</text>
+
+        <!-- Moderator Top -->
+        <rect x="180" y="20" width="140" height="46" rx="6" fill="#475569" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="250" y="42" class="node-text">LLM Orchestrator</text>
+        <text x="250" y="56" class="node-sub">Selects 1 speaker</text>
+
+        <!-- Agents Bottom -->
+        <!-- Agent A -->
+        <g id="curr_node_a">
+          <rect x="30" y="280" width="110" height="60" class="node-box" stroke="#f43f5e"/>
+          <text x="85" y="305" class="node-text">Agent A</text>
+          <text x="85" y="322" class="node-sub">Solo Speaker</text>
+        </g>
+        <!-- Agent B -->
+        <g id="curr_node_b">
+          <rect x="195" y="280" width="110" height="60" class="node-box" stroke="#64748b"/>
+          <text x="250" y="305" class="node-text">Agent B</text>
+          <text x="250" y="322" class="node-sub">Idle</text>
+        </g>
+        <!-- Agent C -->
+        <g id="curr_node_c">
+          <rect x="360" y="280" width="110" height="60" class="node-box" stroke="#64748b"/>
+          <text x="415" y="305" class="node-text">Agent C</text>
+          <text x="415" y="322" class="node-sub">Idle</text>
+        </g>
+
+        <!-- Dynamic Broadcast Lines -->
+        <path d="M 85 280 L 220 200" stroke="#f43f5e" stroke-width="2" stroke-dasharray="4"/>
+        <path d="M 250 200 L 250 280" stroke="#f43f5e" stroke-width="2" stroke-dasharray="4"/>
+        <path d="M 280 200 L 415 280" stroke="#f43f5e" stroke-width="2" stroke-dasharray="4"/>
+
+        <!-- Animated Pulse -->
+        <circle id="curr_pulse" cx="85" cy="280" r="6" fill="#fb7185" style="display:none;"/>
+      </svg>
+
+      <div class="flaw-box">
+        <strong>Major Missing Elements:</strong>
+        <ul style="margin: 4px 0 0 0; padding-left: 18px;">
+          <li>No communication graph (all agents hear all messages via DB).</li>
+          <li>Turn 3 marks the end; Agent B and C may never get 3 rounds.</li>
+          <li>No influence tracking against conversational neighbors.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- WANTED FLOW -->
+    <div class="card wanted">
+      <span class="badge wanted">Week 3 Target</span>
+      <div class="card-title">Strongly Connected Graph Routing</div>
+      <div class="card-desc">
+        Agents routed strictly via directed edges (A &rarr; B &rarr; C &rarr; A).<br>
+        All agents execute each round, perform mid-debate RAG, and update influence deltas.
+      </div>
+
+      <svg id="svgWanted" viewBox="0 0 500 380">
+        <!-- Edges -->
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="22" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8"/>
+          </marker>
+        </defs>
+
+        <!-- Ring Graph Path A -> B -> C -> A -->
+        <!-- A -> B -->
+        <path id="edgeAB" d="M 120 100 L 380 100" stroke="#0284c7" stroke-width="2.5" marker-end="url(#arrow)"/>
+        <!-- B -> C -->
+        <path id="edgeBC" d="M 400 130 L 270 290" stroke="#0284c7" stroke-width="2.5" marker-end="url(#arrow)"/>
+        <!-- C -> A -->
+        <path id="edgeCA" d="M 230 290 L 100 130" stroke="#0284c7" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+        <!-- RAG Storage (Internal Tool Call) -->
+        <rect x="175" y="160" width="150" height="42" rx="6" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="3"/>
+        <text x="250" y="180" class="node-text" fill="#38bdf8">Week 1 RAG Tool</text>
+        <text x="250" y="194" class="node-sub">Mid-discussion ground truth</text>
+
+        <!-- Agent Nodes -->
+        <!-- Node A -->
+        <g id="want_node_a">
+          <circle cx="100" cy="100" r="35" class="node-box" stroke="#38bdf8"/>
+          <text x="100" y="98" class="node-text">Agent A</text>
+          <text x="100" y="112" class="node-sub" id="stance_a">Stance: +4.0</text>
+        </g>
+        <!-- Node B -->
+        <g id="want_node_b">
+          <circle cx="400" cy="100" r="35" class="node-box" stroke="#38bdf8"/>
+          <text x="400" y="98" class="node-text">Agent B</text>
+          <text x="400" y="112" class="node-sub" id="stance_b">Stance: -2.0</text>
+        </g>
+        <!-- Node C -->
+        <g id="want_node_c">
+          <circle cx="250" cy="300" r="35" class="node-box" stroke="#38bdf8"/>
+          <text x="250" y="298" class="node-text">Agent C</text>
+          <text x="250" y="312" class="node-sub" id="stance_c">Stance: 0.0</text>
+        </g>
+
+        <!-- Active Packet Animation -->
+        <circle id="want_packet" cx="100" cy="100" r="7" fill="#facc15" style="display:none;"/>
+      </svg>
+
+      <div class="win-box">
+        <strong>Week 3 Capabilities:</strong>
+        <ul style="margin: 4px 0 0 0; padding-left: 18px;">
+          <li><code>nx.is_strongly_connected(G) == True</code> (Full topological loop).</li>
+          <li>Agent B <em>only</em> digests Agent A's arguments (no broadcast noise).</li>
+          <li>Dynamic mid-discussion retrieval verifies facts during rounds.</li>
+          <li>Influence recorded: <code>|Stance_B - Stance_A|</code> shifts across 3 rounds.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Animation Player Controller -->
+  <div class="controls">
+    <button onclick="togglePlay()" id="playBtn">Pause</button>
+    <button onclick="resetSim()">Restart Flow</button>
+    <div class="status-pill" id="stageText">Status: Round 1 Message Dispatching</div>
+  </div>
+
+<script>
+  let step = 0;
+  let timer = null;
+  let isPlaying = true;
+
+  const stageText = document.getElementById('stageText');
+  const wantPacket = document.getElementById('want_packet');
+  const currPulse = document.getElementById('curr_pulse');
+
+  const stanceA = document.getElementById('stance_a');
+  const stanceB = document.getElementById('stance_b');
+  const stanceC = document.getElementById('stance_c');
+
+  function tick() {
+    step = (step + 1) % 6;
+
+    // Frame 0: Start Round 1
+    if (step === 0) {
+      stageText.innerText = "Round 1: Agent A dispatches argument along Edge (A -> B)";
+      wantPacket.style.display = "block";
+      wantPacket.setAttribute("cx", 100);
+      wantPacket.setAttribute("cy", 100);
+
+      currPulse.style.display = "block";
+      currPulse.setAttribute("cx", 85);
+      currPulse.setAttribute("cy", 280);
+    }
+    // Frame 1: Routing
+    else if (step === 1) {
+      stageText.innerText = "Routing: Only B receives A's message. (Current code broadcasts to all).";
+      wantPacket.setAttribute("cx", 400);
+      wantPacket.setAttribute("cy", 100);
+
+      currPulse.setAttribute("cx", 250);
+      currPulse.setAttribute("cy", 170); // at DB
+    }
+    // Frame 2: Mid-Discussion RAG
+    else if (step === 2) {
+      stageText.innerText = "Mid-Discussion RAG: Agent B queries Neo4j to challenge Agent A";
+      wantPacket.setAttribute("cx", 250);
+      wantPacket.setAttribute("cy", 175);
+
+      currPulse.setAttribute("cx", 415);
+      currPulse.setAttribute("cy", 280); // Agent C receives broadcast prematurely
+    }
+    // Frame 3: Round 2 & Influence Shift
+    else if (step === 3) {
+      stageText.innerText = "Round 2: Agent B moves stance toward A (-2.0 -> +0.5). Influence Logged!";
+      stanceB.textContent = "Stance: +0.5 (Influenced)";
+      stanceB.setAttribute("fill", "#4ade80");
+
+      wantPacket.setAttribute("cx", 400);
+      wantPacket.setAttribute("cy", 100);
+    }
+    // Frame 4: B -> C Routing
+    else if (step === 4) {
+      stageText.innerText = "Round 2: Agent B sends counter-argument to Agent C along edge (B -> C)";
+      wantPacket.setAttribute("cx", 250);
+      wantPacket.setAttribute("cy", 300);
+    }
+    // Frame 5: Round 3 & Save
+    else if (step === 5) {
+      stageText.innerText = "Round 3: Cycle completes (C -> A). Full graph persisted for Week 4!";
+      stanceC.textContent = "Stance: +1.2";
+      stanceC.setAttribute("fill", "#4ade80");
+      wantPacket.setAttribute("cx", 100);
+      wantPacket.setAttribute("cy", 100);
+    }
+  }
+
+  function start() {
+    timer = setInterval(tick, 1700);
+  }
+
+  function togglePlay() {
+    if (isPlaying) {
+      clearInterval(timer);
+      document.getElementById('playBtn').innerText = "Play";
+    } else {
+      start();
+      document.getElementById('playBtn').innerText = "Pause";
+    }
+    isPlaying = !isPlaying;
+  }
+
+  function resetSim() {
+    step = -1;
+    stanceA.textContent = "Stance: +4.0";
+    stanceB.textContent = "Stance: -2.0";
+    stanceB.setAttribute("fill", "#94a3b8");
+    stanceC.textContent = "Stance: 0.0";
+    stanceC.setAttribute("fill", "#94a3b8");
+    tick();
+  }
+
+  start();
+</script>
+</body>
+</html>

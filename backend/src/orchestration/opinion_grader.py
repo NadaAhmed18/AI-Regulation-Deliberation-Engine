@@ -1,26 +1,58 @@
 import json
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from langfuse import observe
 
 from src.clients.llm_client import LLMClient
 from src.utils.prompt_builder import render_prompt
+from src.utils.stance_utils import compute_shift_magnitude
+
 
 class OpinionGrader:
     def __init__(self):
         self.llm = LLMClient()
 
     @observe(as_type="generation", name="grade_opinion_shift")
-    def evaluate_stance(self, topic: str, agent_name: str, original_stance: str, latest_statement: str, previous_score: float = 0.0) -> Dict[str, Any]:
+    def evaluate_stance(
+        self,
+        topic: str,
+        agent_name: str,
+        original_stance: str,
+        latest_statement: str,
+        previous_score: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
-        Evaluates an agent's latest statement to determine their current mathematical stance (-5.0 to 5.0).
+        Evaluates an agent's latest statement to determine their current
+        mathematical stance (-5.0 to 5.0), using an LLM as the grader.
+
+        Args:
+            previous_score: The agent's own previous stance score in this
+                simulation, or `None` if this is their first scored turn.
+                `None` (not `0.0`) matters here for two reasons: (1) it is
+                passed into the prompt so the LLM is explicitly told
+                "no prior score exists" rather than being handed a
+                fabricated neutral baseline to compute a shift against,
+                and (2) `shift_magnitude` below is computed with
+                `stance_utils.compute_shift_magnitude`, the exact same
+                helper `DebertaStanceGrader` (`nli_grader.py`) uses — so
+                both graders treat a missing prior score identically
+                instead of each re-deriving the None-vs-0.0 rule
+                slightly differently.
         """
+        previous_score_text = (
+            "None (this is the agent's first scored turn — do not "
+            "report a shift_magnitude, use 0.0)"
+            if previous_score is None
+            else f"{previous_score:.2f}"
+        )
+
         prompt = render_prompt(
             "opinion_grader",
             topic=topic,
             agent_name=agent_name,
             original_stance=original_stance,
-            latest_statement=latest_statement
+            latest_statement=latest_statement,
+            previous_score=previous_score_text,
         )
 
         messages = [
@@ -31,10 +63,14 @@ class OpinionGrader:
         response = self.llm.generate_response(messages, response_format="json_object")
         content = response.get("content", "")
 
-        # Default fallback in case of LLM parsing failure
+        # Default fallback in case of LLM parsing failure. `current_stance_score`
+        # falls back to `previous_score` if there is one (best available
+        # estimate — assume unchanged), or 0.0 (neutral) only if there is
+        # no previous score to fall back to.
+        fallback_score = previous_score if previous_score is not None else 0.0
         result = {
-            "current_stance_score": previous_score,
-            "shift_magnitude": 0.0,
+            "current_stance_score": fallback_score,
+            "shift_magnitude": compute_shift_magnitude(fallback_score, previous_score),
             "reasoning": "Failed to parse opinion shift from LLM."
         }
 
@@ -43,57 +79,78 @@ class OpinionGrader:
             match = re.search(r'\{.*\}', content, re.DOTALL)
             if match:
                 parsed = json.loads(match.group(0))
-                
-                result["current_stance_score"] = float(parsed.get("current_stance_score", previous_score))
-                result["shift_magnitude"] = float(parsed.get("shift_magnitude", 0.0))
+
+                result["current_stance_score"] = float(parsed.get("current_stance_score", fallback_score))
                 result["reasoning"] = str(parsed.get("reasoning", "Evaluated successfully."))
-                
+
                 # Sanity check bounds (-5.0 to 5.0)
                 result["current_stance_score"] = max(-5.0, min(5.0, result["current_stance_score"]))
-                
+
+                # shift_magnitude is only meaningful if there was a
+                # previous score to shift from; don't trust an LLM-
+                # reported shift against a baseline that doesn't exist.
+                result["shift_magnitude"] = compute_shift_magnitude(result["current_stance_score"], previous_score)
+
         except Exception as e:
             print(f"[!] Opinion Grader Error: {e} | Raw Output: {content}")
 
         return result
-
-
+        
 if __name__ == "__main__":
-    # Test runner: python -m src.orchestration.opinion_grader
-    print("\n" + "=" * 60)
-    print(" smoke test: OpinionGrader ".center(60, "="))
-    print("=" * 60)
+    print("=== OpinionGrader Smoke Test ===")
 
     grader = OpinionGrader()
-    test_topic = "Should frontier open-source AI models require government licenses?"
-    agent = "Sarah Chen"
-    baseline_stance = "Strongly pro-open source; opposes centralized licensing."
 
-    # Turn 1: Defiant statement
-    turn_1_text = (
-        "Mandating licenses for open weights centralizes technology into the hands of cloud monopolies. "
-        "Open security auditing is strictly superior to government gatekeeping."
+    topic = "AI Regulation under the EU AI Act"
+    agent_name = "Marcus Chen"
+    original_stance = (
+        "Supports AI innovation and is cautious about regulatory "
+        "burden on startups and SMEs."
     )
-    res_1 = grader.evaluate_stance(
-        topic=test_topic,
-        agent_name=agent,
-        original_stance=baseline_stance,
-        latest_statement=turn_1_text,
-        previous_score=0.0
-    )
-    print(f"\n[Turn 1 Output for {agent}]:")
-    print(json.dumps(res_1, indent=2))
 
-    # Turn 2: Concession / shift statement
-    turn_2_text = (
-        "While I remain opposed to broad bans, I can concede that models trained on compute clusters "
-        "exceeding 10^26 FLOPs pose unique systemic risks that merit third-party verification."
+    # -----------------------------
+    # Turn 1: First scored statement
+    # -----------------------------
+    statement_1 = (
+        "The EU AI Act can provide useful safeguards, "
+        "but startups need proportional compliance requirements."
     )
-    res_2 = grader.evaluate_stance(
-        topic=test_topic,
-        agent_name=agent,
-        original_stance=baseline_stance,
-        latest_statement=turn_2_text,
-        previous_score=res_1["current_stance_score"]
+
+    result_1 = grader.evaluate_stance(
+        topic=topic,
+        agent_name=agent_name,
+        original_stance=original_stance,
+        latest_statement=statement_1,
+        previous_score=None,
     )
-    print(f"\n[Turn 2 Output after Concession (Shift Delta: {res_2['shift_magnitude']})]:")
-    print(json.dumps(res_2, indent=2))
+
+    print("\n--- Turn 1 ---")
+    print(f"Statement: {statement_1}")
+    print(f"Current stance: {result_1['current_stance_score']}")
+    print(f"Shift magnitude: {result_1['shift_magnitude']}")
+    print(f"Reasoning: {result_1['reasoning']}")
+
+    # -----------------------------
+    # Turn 2: Use Turn 1 score
+    # -----------------------------
+    statement_2 = (
+        "After considering the risks of discrimination and lack of "
+        "transparency, I now support stronger AI regulation."
+    )
+
+    result_2 = grader.evaluate_stance(
+        topic=topic,
+        agent_name=agent_name,
+        original_stance=original_stance,
+        latest_statement=statement_2,
+        previous_score=result_1["current_stance_score"],
+    )
+
+    print("\n--- Turn 2 ---")
+    print(f"Statement: {statement_2}")
+    print(f"Previous stance: {result_1['current_stance_score']}")
+    print(f"Current stance: {result_2['current_stance_score']}")
+    print(f"Shift magnitude: {result_2['shift_magnitude']}")
+    print(f"Reasoning: {result_2['reasoning']}")
+
+    print("\n=== Smoke Test Passed ===")

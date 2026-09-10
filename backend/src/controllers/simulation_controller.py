@@ -201,6 +201,51 @@ class SimulationController:
                 (sim_id,),
             )
             return cur.rowcount > 0
+        
+    def get_last_stance_score(self, sim_id: str, agent_name: str) -> Optional[float]:
+        """
+        Fetch this agent's most recent `current_stance_score` for this
+        simulation, or `None` if the agent has no prior scored turn yet.
+
+        `None` (not `0.0`) on a miss is deliberate: `0.0` is a genuine
+        neutral score, while "no row found" means no prior score exists
+        at all. Callers (e.g. `node_grade_opinion` in
+        `discussion_graph.py`) should pass this value straight through as
+        `previous_score` to `DebertaStanceGrader.evaluate_stance()` /
+        `OpinionGrader.evaluate_stance()`, both of which treat `None` as
+        "first turn, no shift to compute" rather than "shifted from 0.0."
+        """
+        with self._get_cursor() as cur:
+            cur.execute("""
+                SELECT opinion_snapshot->>'current_stance_score' AS score
+                FROM discussion_history
+                WHERE simulation_id = %s AND agent_name = %s AND opinion_snapshot IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+            """, (sim_id, agent_name))
+
+            row: Any = cur.fetchone()
+
+            if row is None or row["score"] is None:
+                return None
+
+            return float(row["score"])
+        
+    def get_last_round_number(self, sim_id: str) -> int:
+        """Returns the highest round number recorded so far for this simulation, or 0."""
+        with self._get_cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(MAX(round_number), 0) AS last_round 
+                FROM discussion_history 
+                WHERE simulation_id = %s
+                """,
+                (sim_id,),
+            )
+            row: Any = cur.fetchone()
+            if row and row["last_round"] is not None:
+                return int(row["last_round"])
+            return 0
 
     def close(self) -> None:
         """Explicitly closes the shared database connection."""

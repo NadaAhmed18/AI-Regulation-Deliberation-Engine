@@ -3,11 +3,11 @@ from typing import List, Dict, Any, TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from langfuse import observe
 
-from src.clients.postgres import PostgresClient
+from src.controllers.simulation_controller import SimulationController
 from src.agent.memory.memory_manager import ConversationContextManager
 from src.agent.base_agent import BaseAgent
 from src.agent.orchestrator import Orchestrator
-from src.orchestration.opinion_grader import OpinionGrader
+from src.orchestration.nli_grader import DebertaStanceGrader
 
 
 # 1. State Definition
@@ -29,8 +29,9 @@ class DebateState(TypedDict):
 class DiscussionEngine:
     def __init__(self):
         self.orchestrator = Orchestrator()
-        self.opinion_grader = OpinionGrader()
-        self.db = PostgresClient()
+        # High-precision local NLI cross-encoder for stance scoring
+        self.stance_grader = DebertaStanceGrader()
+        self.controller = SimulationController()
 
         # Build the LangGraph Workflow
         workflow = StateGraph(DebateState)
@@ -110,33 +111,24 @@ class DiscussionEngine:
 
     @observe(as_type="generation", name="node_grade_opinion")
     def node_grade_opinion(self, state: DebateState) -> Dict[str, Any]:
-        """Evaluates opinion shift and persists turn to PostgreSQL."""
+        """Evaluates opinion shift using DeBERTa NLI and persists turn to PostgreSQL via SimulationController."""
         speaker_name = state["current_speaker"]
-        persona = next((p for p in state["personas"] if p["name"] == speaker_name), state["personas"][0])
 
-        # Fetch the agent's own last scored turn (None if this is their
-        # first scored turn in this simulation) instead of always
-        # comparing against a hardcoded 0.0 -- 0.0 is a genuine neutral
-        # prior score, `None` means "no prior score exists yet," and
-        # `OpinionGrader.evaluate_stance` (like `DebertaStanceGrader` in
-        # nli_grader.py) treats the two differently. See
-        # `PostgresClient.get_last_stance_score` and
-        # docs/Influence-Tracking.md's Section 3 Implementation Notes.
-        previous_score = self.db.get_last_stance_score(
+        # Fetch the agent's real previous score (None on first turn)
+        previous_score = self.controller.get_last_stance_score(
             sim_id=state["simulation_id"],
             agent_name=speaker_name,
         )
 
-        opinion_snapshot = self.opinion_grader.evaluate_stance(
+        # Local NLI inference (no remote LLM required)
+        opinion_snapshot = self.stance_grader.evaluate_stance(
             topic=state["topic"],
-            agent_name=speaker_name,
-            original_stance=persona["stance"],
-            latest_statement=state["last_message"],
+            statement=state["last_message"],
             previous_score=previous_score
         )
 
         # Persist turn
-        self.db.save_discussion_turn(
+        self.controller.save_discussion_turn(
             sim_id=state["simulation_id"],
             round_num=state["current_round"],
             agent_name=speaker_name,
@@ -159,28 +151,15 @@ class DiscussionEngine:
     ) -> Dict[str, Any]:
         """
         Observability Entry Point: Runs the discussion for N steps and logs the trace to Langfuse.
-        Pulls latest state from PostgreSQL so simulations can be paused and resumed on demand.
+        Pulls latest state via SimulationController so simulations can be paused and resumed on demand.
         """
         # 1. Fetch simulation configuration from DB
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT topic, memory_strategy, personas FROM simulations WHERE simulation_id = %s",
-                    (sim_id,)
-                )
-                raw_sim_row = cur.fetchone()
-                if not raw_sim_row:
-                    raise ValueError(f"Simulation ID '{sim_id}' not found in database.")
+        sim_data = self.controller.get_simulation_by_id(sim_id)
+        if not sim_data:
+            raise ValueError(f"Simulation ID '{sim_id}' not found in database.")
 
-                sim_data: Dict[str, Any] = dict(raw_sim_row)
-
-                # 2. Get the highest round currently played
-                cur.execute(
-                    "SELECT COALESCE(MAX(round_number), 0) AS last_round FROM discussion_history WHERE simulation_id = %s",
-                    (sim_id,)
-                )
-                raw_round_row = cur.fetchone()
-                last_round: int = int(dict(raw_round_row)["last_round"]) if raw_round_row else 0
+        # 2. Get the highest round currently played
+        last_round = self.controller.get_last_round_number(sim_id)
 
         topic: str = str(sim_data["topic"])
         personas: List[dict] = list(sim_data["personas"])
@@ -245,9 +224,9 @@ if __name__ == "__main__":
     # 2. Construct Visibility Matrix (Ring: Elena sees Alex, Alex sees Elena)
     test_vis_matrix = SetupManager.build_visibility_matrix(test_personas, topology="ring")
 
-    # 3. Initialize Postgres simulation record
-    db_client = PostgresClient()
-    db_client.create_simulation(
+    # 3. Initialize Postgres simulation record using the Controller
+    controller = SimulationController()
+    controller.create_simulation(
         sim_id=test_sim_id,
         topic=test_topic,
         memory_strategy={"type": "sliding_window", "window_size": 3},

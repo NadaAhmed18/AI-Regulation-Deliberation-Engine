@@ -95,30 +95,3 @@ class PostgresClient:
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (sim_id, round_num, agent_name, role, content, json.dumps(opinion), json.dumps(sources or [])))
             conn.commit()
-
-    def get_last_stance_score(self, sim_id: str, agent_name: str) -> Optional[float]:
-        """
-        Fetch this agent's most recent `current_stance_score` for this
-        simulation, or `None` if the agent has no prior scored turn yet.
-
-        `None` (not `0.0`) on a miss is deliberate: `0.0` is a genuine
-        neutral score, while "no row found" means no prior score exists
-        at all. Callers (e.g. `node_grade_opinion` in
-        `discussion_graph.py`) should pass this value straight through as
-        `previous_score` to `DebertaStanceGrader.evaluate_stance()` /
-        `OpinionGrader.evaluate_stance()`, both of which treat `None` as
-        "first turn, no shift to compute" rather than "shifted from 0.0."
-        """
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT opinion_snapshot->>'current_stance_score' AS score
-                    FROM discussion_history
-                    WHERE simulation_id = %s AND agent_name = %s AND opinion_snapshot IS NOT NULL
-                    ORDER BY id DESC
-                    LIMIT 1
-                """, (sim_id, agent_name))
-                row = cur.fetchone()
-                if row is None or row["score"] is None:
-                    return None
-                return float(row["score"])

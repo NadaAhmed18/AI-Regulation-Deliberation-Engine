@@ -7,7 +7,9 @@ from src.controllers.simulation_controller import SimulationController
 from src.agent.memory.memory_manager import ConversationContextManager
 from src.agent.base_agent import BaseAgent
 from src.agent.orchestrator import Orchestrator
+from src.orchestration.opinion_grader import OpinionGrader
 from src.orchestration.nli_grader import DebertaStanceGrader
+from src import config
 
 
 # 1. State Definition
@@ -29,9 +31,15 @@ class DebateState(TypedDict):
 class DiscussionEngine:
     def __init__(self):
         self.orchestrator = Orchestrator()
-        # High-precision local NLI cross-encoder for stance scoring
-        self.stance_grader = DebertaStanceGrader()
         self.controller = SimulationController()
+
+        # Stance grader: pluggable between the LLM-based OpinionGrader
+        # ("llm") and the local NLI-based DebertaStanceGrader ("nli", default),
+        # via the STANCE_GRADER_ENGINE env var (see config.py).
+        self.grader_engine = getattr(config, "STANCE_GRADER_ENGINE", "nli")
+        self.opinion_grader = (
+            DebertaStanceGrader() if self.grader_engine == "nli" else OpinionGrader()
+        )
 
         # Build the LangGraph Workflow
         workflow = StateGraph(DebateState)
@@ -79,7 +87,7 @@ class DiscussionEngine:
         """Selected agent speaks using their persona, custom memory type, and visibility rules."""
         speaker_name = state["current_speaker"]
         persona = next((p for p in state["personas"] if p["name"] == speaker_name), state["personas"][0])
-        
+
         agent = BaseAgent(persona=persona, topic=state["topic"])
 
         # 1. Resolve agent's individual memory config (or fallback to simulation memory)
@@ -109,10 +117,39 @@ class DiscussionEngine:
             "last_sources": cited_sources
         }
 
+    def _grade_opinion(
+            self,
+            topic: str,
+            agent_name: str,
+            original_stance: str,
+            latest_statement: str,
+            previous_score: Optional[float],
+        ) -> Dict[str, Any]:
+            """
+            Adapter over the two grader engines' differing evaluate_stance()
+            signatures. Uses isinstance to allow Pylance to resolve the differing types.
+            """
+            if isinstance(self.opinion_grader, DebertaStanceGrader):
+                return self.opinion_grader.evaluate_stance(
+                    topic=topic,
+                    statement=latest_statement,
+                    previous_score=previous_score,
+                )
+            elif isinstance(self.opinion_grader, OpinionGrader):
+                return self.opinion_grader.evaluate_stance(
+                    topic=topic,
+                    agent_name=agent_name,
+                    original_stance=original_stance,
+                    latest_statement=latest_statement,
+                    previous_score=previous_score,
+                )
+            raise TypeError(f"Unsupported grader engine: {type(self.opinion_grader)}")
+
     @observe(as_type="generation", name="node_grade_opinion")
     def node_grade_opinion(self, state: DebateState) -> Dict[str, Any]:
-        """Evaluates opinion shift using DeBERTa NLI and persists turn to PostgreSQL via SimulationController."""
+        """Evaluates opinion shift and persists turn to PostgreSQL via SimulationController."""
         speaker_name = state["current_speaker"]
+        persona = next((p for p in state["personas"] if p["name"] == speaker_name), state["personas"][0])
 
         # Fetch the agent's real previous score (None on first turn)
         previous_score = self.controller.get_last_stance_score(
@@ -120,11 +157,12 @@ class DiscussionEngine:
             agent_name=speaker_name,
         )
 
-        # Local NLI inference (no remote LLM required)
-        opinion_snapshot = self.stance_grader.evaluate_stance(
+        opinion_snapshot = self._grade_opinion(
             topic=state["topic"],
-            statement=state["last_message"],
-            previous_score=previous_score
+            agent_name=speaker_name,
+            original_stance=persona["stance"],
+            latest_statement=state["last_message"],
+            previous_score=previous_score,
         )
 
         # Persist turn

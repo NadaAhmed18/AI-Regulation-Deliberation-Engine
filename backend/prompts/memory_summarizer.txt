@@ -10,7 +10,7 @@ Review the following chronological chat history from an ongoing debate about: {t
 # Rules
 - Do not lose the core arguments, concessions, or specific data points cited by the agents.
 - Write the summary as a neutral chronological report (e.g., "Agent A argued X, citing Y. Agent B rebutted with Z...").
-- Keep it under 250 words.
+- Keep it under 1000 words.
 
 # Output
 Provide ONLY the summary text.

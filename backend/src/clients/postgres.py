@@ -1,13 +1,46 @@
 import os
 import json
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from src.config import DATABASE_URL
 
 class PostgresClient:
     def __init__(self):
+        self._ensure_database_exists()
         self._init_db()
+
+    def _ensure_database_exists(self):
+        """Connects to the maintenance DB and auto-creates the target DB if missing."""
+        parsed = urlparse(DATABASE_URL)
+        target_db = parsed.path.lstrip("/")
+        if not target_db:
+            return
+
+        # Maintenance databases that always exist in PostgreSQL
+        maintenance_dbs = ["postgres", "template1"]
+        
+        for admin_db in maintenance_dbs:
+            admin_url = urlunparse(parsed._replace(path=f"/{admin_db}"))
+            try:
+                admin_conn = psycopg2.connect(admin_url)
+                admin_conn.autocommit = True  # Required for CREATE DATABASE
+                with admin_conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
+                    exists = cur.fetchone()
+                    if not exists:
+                        print(f"[*] Database '{target_db}' does not exist. Creating it automatically...")
+                        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target_db)))
+                        print(f"[+] Database '{target_db}' created successfully.")
+                admin_conn.close()
+                return
+            except psycopg2.OperationalError:
+                continue
+            except Exception as e:
+                print(f"[!] Warning during auto database creation: {e}")
+                break
 
     def get_connection(self):
         return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)

@@ -108,7 +108,7 @@ def clean_content(html: str, fallback_markdown: str) -> str:
 
 async def _fetch_url(crawler: AsyncWebCrawler, url: str) -> tuple:
     """Helper to fetch a single URL and return the URL alongside its result."""
-    result = await crawler.arun(url, excluded_tags=["script", "style", "nav", "footer"])
+    result = await crawler.arun(url, excluded_tags=["script", "style", "nav", "footer"], page_timeout=15000)
     return url, result
 
 

@@ -79,7 +79,7 @@ class DiscussionEngine:
         speaker_name = state["current_speaker"]
         persona = next((p for p in state["personas"] if p["name"] == speaker_name), state["personas"][0])
         
-        agent = BaseAgent(persona=persona)
+        agent = BaseAgent(persona=persona, topic=state["topic"])
 
         # 1. Resolve agent's individual memory config (or fallback to simulation memory)
         agent_memory = persona.get("memory_config") or state.get("memory_strategy", {"type": "sliding_window", "window_size": 4})

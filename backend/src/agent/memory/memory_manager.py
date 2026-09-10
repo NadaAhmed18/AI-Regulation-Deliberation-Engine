@@ -54,6 +54,13 @@ class ConversationContextManager:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
         if not raw_history:
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"The debate on '{self.topic}' is now starting. "
+                    f"As {current_agent_name}, present your opening statement and initial arguments based on your stance."
+                )
+            })
             return messages
 
         # =========================================================================

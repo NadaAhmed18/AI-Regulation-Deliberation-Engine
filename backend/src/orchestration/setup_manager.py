@@ -11,7 +11,7 @@ class SetupManager:
         # We use a dedicated LLM instance for setup tasks
         self.llm = LLMClient()
 
-    @observe(as_type="generation", name="generate_personas")
+    @observe(name="generate_personas")
     def generate_personas(
         self, 
         topic: str, 

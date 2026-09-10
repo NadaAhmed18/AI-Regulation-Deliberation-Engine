@@ -5,7 +5,7 @@ import re
 from typing import Optional, Any
 
 # Langfuse imports
-from langfuse.api import OpenAI as LangfuseOpenAI
+from langfuse.openai import OpenAI as LangfuseOpenAI # type: ignore
 from langfuse import observe, get_client
 
 from src.config import DEFAULT_PROVIDER, DEFAULT_MODEL,OPENROUTER_API_KEY

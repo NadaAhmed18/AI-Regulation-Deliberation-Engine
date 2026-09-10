@@ -16,12 +16,13 @@ from src.utils.prompt_builder import render_prompt
 class BaseAgent:
     def __init__(
         self, 
-        persona: dict, 
+        persona: dict,
+        topic: str,
         provider: Optional[str] = None, 
         model_name: Optional[str] = None
     ):
         self.persona = persona
-
+        self.topic = topic
         self.name: str = persona["name"]
         self.background: str = persona["background"]
         self.stance: str = persona["stance"]
@@ -41,6 +42,7 @@ class BaseAgent:
         self.system_prompt = render_prompt(
             "system_agent",
             persona_name=self.name,
+            topic=self.topic,
             persona_background=self.background,
             persona_stance=self.stance,
             persona_tone=self.tone,

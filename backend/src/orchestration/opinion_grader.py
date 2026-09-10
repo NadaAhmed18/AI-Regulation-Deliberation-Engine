@@ -55,3 +55,45 @@ class OpinionGrader:
             print(f"[!] Opinion Grader Error: {e} | Raw Output: {content}")
 
         return result
+
+
+if __name__ == "__main__":
+    # Test runner: python -m src.orchestration.opinion_grader
+    print("\n" + "=" * 60)
+    print(" smoke test: OpinionGrader ".center(60, "="))
+    print("=" * 60)
+
+    grader = OpinionGrader()
+    test_topic = "Should frontier open-source AI models require government licenses?"
+    agent = "Sarah Chen"
+    baseline_stance = "Strongly pro-open source; opposes centralized licensing."
+
+    # Turn 1: Defiant statement
+    turn_1_text = (
+        "Mandating licenses for open weights centralizes technology into the hands of cloud monopolies. "
+        "Open security auditing is strictly superior to government gatekeeping."
+    )
+    res_1 = grader.evaluate_stance(
+        topic=test_topic,
+        agent_name=agent,
+        original_stance=baseline_stance,
+        latest_statement=turn_1_text,
+        previous_score=0.0
+    )
+    print(f"\n[Turn 1 Output for {agent}]:")
+    print(json.dumps(res_1, indent=2))
+
+    # Turn 2: Concession / shift statement
+    turn_2_text = (
+        "While I remain opposed to broad bans, I can concede that models trained on compute clusters "
+        "exceeding 10^26 FLOPs pose unique systemic risks that merit third-party verification."
+    )
+    res_2 = grader.evaluate_stance(
+        topic=test_topic,
+        agent_name=agent,
+        original_stance=baseline_stance,
+        latest_statement=turn_2_text,
+        previous_score=res_1["current_stance_score"]
+    )
+    print(f"\n[Turn 2 Output after Concession (Shift Delta: {res_2['shift_magnitude']})]:")
+    print(json.dumps(res_2, indent=2))

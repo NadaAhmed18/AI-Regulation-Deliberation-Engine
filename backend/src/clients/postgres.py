@@ -1,13 +1,46 @@
 import os
 import json
-from typing import List, Optional,Dict,Any
+from typing import Optional
+from urllib.parse import urlparse, urlunparse
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from src.config import DATABASE_URL
 
 class PostgresClient:
     def __init__(self):
+        self._ensure_database_exists()
         self._init_db()
+
+    def _ensure_database_exists(self):
+        """Connects to the maintenance DB and auto-creates the target DB if missing."""
+        parsed = urlparse(DATABASE_URL)
+        target_db = parsed.path.lstrip("/")
+        if not target_db:
+            return
+
+        # Maintenance databases that always exist in PostgreSQL
+        maintenance_dbs = ["postgres", "template1"]
+        
+        for admin_db in maintenance_dbs:
+            admin_url = urlunparse(parsed._replace(path=f"/{admin_db}"))
+            try:
+                admin_conn = psycopg2.connect(admin_url)
+                admin_conn.autocommit = True  # Required for CREATE DATABASE
+                with admin_conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
+                    exists = cur.fetchone()
+                    if not exists:
+                        print(f"[*] Database '{target_db}' does not exist. Creating it automatically...")
+                        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target_db)))
+                        print(f"[+] Database '{target_db}' created successfully.")
+                admin_conn.close()
+                return
+            except psycopg2.OperationalError:
+                continue
+            except Exception as e:
+                print(f"[!] Warning during auto database creation: {e}")
+                break
 
     def get_connection(self):
         return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -64,84 +97,3 @@ class PostgresClient:
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (sim_id, round_num, agent_name, role, content, json.dumps(opinion), json.dumps(sources or [])))
             conn.commit()
-
-    def get_all_simulations(self) -> List[Dict[str, Any]]:
-        """
-        Returns every simulation with its topic, status, personas, memory
-        strategy and how many discussion turns it has logged so far.
-        Ordered newest-first.
-        """
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT
-                        s.simulation_id,
-                        s.topic,
-                        s.status,
-                        s.memory_strategy,
-                        s.personas,
-                        s.created_at,
-                        COUNT(h.id) AS turn_count
-                    FROM simulations s
-                    LEFT JOIN discussion_history h
-                        ON h.simulation_id = s.simulation_id
-                    GROUP BY s.simulation_id
-                    ORDER BY s.created_at DESC
-                """)
-                rows = cur.fetchall()
-                return [dict(row) for row in rows]
- 
-    def search_simulations_by_regex(self, pattern: str) -> List[Dict[str, Any]]:
-        """
-        Filters simulations whose topic matches the given POSIX regex
-        (case-insensitive), using Postgres' native `~*` operator.
-        Raises the underlying psycopg2 error if the pattern is invalid.
-        """
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT
-                        s.simulation_id,
-                        s.topic,
-                        s.status,
-                        s.memory_strategy,
-                        s.personas,
-                        s.created_at,
-                        COUNT(h.id) AS turn_count
-                    FROM simulations s
-                    LEFT JOIN discussion_history h
-                        ON h.simulation_id = s.simulation_id
-                    WHERE s.topic ~* %s
-                    GROUP BY s.simulation_id
-                    ORDER BY s.created_at DESC
-                """, (pattern,))
-                rows = cur.fetchall()
-                return [dict(row) for row in rows]
- 
-    def get_simulation_by_id(self, sim_id: str) -> Optional[Dict[str, Any]]:
-        """Returns a single simulation's metadata, or None if it doesn't exist."""
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT simulation_id, topic, status, memory_strategy, personas, created_at
-                    FROM simulations
-                    WHERE simulation_id = %s
-                """, (sim_id,))
-                row = cur.fetchone()
-                return dict(row) if row else None
- 
-    def delete_simulation(self, sim_id: str) -> bool:
-        """
-        Deletes a simulation by id. discussion_history rows are removed
-        automatically because of the ON DELETE CASCADE foreign key.
-        Returns True if a row was deleted, False if the id didn't exist.
-        """
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    DELETE FROM simulations
-                    WHERE simulation_id = %s
-                """, (sim_id,))
-                deleted = cur.rowcount > 0
-            conn.commit()
-            return deleted

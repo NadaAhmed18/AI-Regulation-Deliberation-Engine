@@ -19,7 +19,7 @@ class DebateState(TypedDict):
     memory_strategy: dict
     max_rounds: int
     current_round: int
-    
+
     current_speaker: str
     last_message: str
     last_sources: list
@@ -42,7 +42,7 @@ class DiscussionEngine:
         workflow.set_entry_point("orchestrate")
         workflow.add_edge("orchestrate", "agent_turn")
         workflow.add_edge("agent_turn", "grade_opinion")
-        
+
         # Stop condition: loop until current_round reaches max_rounds
         workflow.add_conditional_edges(
             "grade_opinion",
@@ -56,18 +56,18 @@ class DiscussionEngine:
     def node_orchestrate(self, state: DebateState) -> Dict[str, Any]:
         """Moderator selects the next speaker based on recent turns."""
         temp_manager = ConversationContextManager(
-            simulation_id=state["simulation_id"], 
-            topic=state["topic"], 
+            simulation_id=state["simulation_id"],
+            topic=state["topic"],
             strategy={"type": "sliding_window", "window_size": 3}
         )
         recent_history = temp_manager.build_context_for_agent(system_prompt="")
-        
+
         next_speaker = self.orchestrator.decide_next_speaker(
             topic=state["topic"],
             personas=state["personas"],
             messages=recent_history
         )
-        
+
         return {
             "current_speaker": next_speaker,
             "current_round": state["current_round"] + 1
@@ -90,8 +90,8 @@ class DiscussionEngine:
 
         # 3. Build graph-routed context
         context_manager = ConversationContextManager(
-            simulation_id=state["simulation_id"], 
-            topic=state["topic"], 
+            simulation_id=state["simulation_id"],
+            topic=state["topic"],
             strategy=agent_memory
         )
         messages = context_manager.build_context_for_agent(
@@ -113,13 +113,26 @@ class DiscussionEngine:
         """Evaluates opinion shift and persists turn to PostgreSQL."""
         speaker_name = state["current_speaker"]
         persona = next((p for p in state["personas"] if p["name"] == speaker_name), state["personas"][0])
-        
+
+        # Fetch the agent's own last scored turn (None if this is their
+        # first scored turn in this simulation) instead of always
+        # comparing against a hardcoded 0.0 -- 0.0 is a genuine neutral
+        # prior score, `None` means "no prior score exists yet," and
+        # `OpinionGrader.evaluate_stance` (like `DebertaStanceGrader` in
+        # nli_grader.py) treats the two differently. See
+        # `PostgresClient.get_last_stance_score` and
+        # docs/Influence-Tracking.md's Section 3 Implementation Notes.
+        previous_score = self.db.get_last_stance_score(
+            sim_id=state["simulation_id"],
+            agent_name=speaker_name,
+        )
+
         opinion_snapshot = self.opinion_grader.evaluate_stance(
             topic=state["topic"],
             agent_name=speaker_name,
             original_stance=persona["stance"],
             latest_statement=state["last_message"],
-            previous_score=0.0
+            previous_score=previous_score
         )
 
         # Persist turn
@@ -139,9 +152,9 @@ class DiscussionEngine:
 
     @observe(name="step_discussion")
     def step_discussion(
-        self, 
-        sim_id: str, 
-        steps: int = 1, 
+        self,
+        sim_id: str,
+        steps: int = 1,
         visibility_matrix: Optional[Dict[str, List[str]]] = None
     ) -> Dict[str, Any]:
         """

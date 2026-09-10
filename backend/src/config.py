@@ -51,6 +51,17 @@ MAX_REACT_STEPS = int(os.getenv("MAX_REACT_STEPS", 5))       # Max autonomous to
 DEFAULT_ROUNDS = int(os.getenv("DEFAULT_ROUNDS", 3))         # Default debate rounds
 DEFAULT_NUM_AGENTS = int(os.getenv("DEFAULT_NUM_AGENTS", 3)) # Default number of generated personas
 
+# ==============================================================================
+# 5b. STANCE GRADING ENGINE
+# ==============================================================================
+# "llm" -> OpinionGrader (LLM-based, uses agent persona + reasoning text)
+# "nli" -> DebertaStanceGrader (local NLI cross-encoder, no API cost/latency)
+# Default stays "llm" so existing deployments don't silently start
+# downloading a ~1.6GB model or switching scoring behavior. Set
+# STANCE_GRADER_ENGINE=nli in .env to make the local grader the live
+# engine. See docs/NLI-Grader-Optimizations.md and
+# docs/Influence-Tracking.md for the tradeoffs.
+STANCE_GRADER_ENGINE = os.getenv("STANCE_GRADER_ENGINE", "llm").lower()
 
 # ==============================================================================
 # 6. EXTERNAL TOOLS & WEB SEARCH

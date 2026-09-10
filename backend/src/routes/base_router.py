@@ -1,22 +1,29 @@
 import logging
 from fastapi import APIRouter, Depends
-from .response import success_response, fail_response
+from ..utils.response import success_response, fail_response
 from src.clients.postgres import PostgresClient
 from src.clients.neo4j import Neo4jClient
 from .dependencies import get_pg_client, get_neo4j_client
+
 
 logger = logging.getLogger("uvicorn")
 base_router = APIRouter(tags=["health"])
 
 
-@base_router.get("/health")
-def health_check(
-    pg: PostgresClient = Depends(get_pg_client),
-    neo4j: Neo4jClient = Depends(get_neo4j_client),
-):
-  
-    services: dict[str, str] = {}
+@base_router.get("/ping")
+def ping():
+    return success_response(
+        message="Application is alive.",
+        data={"status": "ok"},
+        status_code=200,
+    )
 
+
+@base_router.get("/health")
+def health_check( pg: PostgresClient = Depends(get_pg_client),
+                  neo4j: Neo4jClient = Depends(get_neo4j_client),):
+    services: dict[str, str] = {}
+    # PostgreSQL readiness check
     try:
         with pg.get_connection() as conn:
             with conn.cursor() as cur:
@@ -26,6 +33,7 @@ def health_check(
         logger.error(f"PostgreSQL health check failed: {e}")
         services["postgres"] = f"error: {e}"
 
+    # Neo4j readiness check
     try:
         neo4j.execute_query("RETURN 1 AS ping")
         services["neo4j"] = "ok"
@@ -33,8 +41,16 @@ def health_check(
         logger.error(f"Neo4j health check failed: {e}")
         services["neo4j"] = f"error: {e}"
 
-    is_healthy = all(v == "ok" for v in services.values())
-    message = "All services are healthy." if is_healthy else "One or more services are unhealthy."
+    is_healthy = all(
+        status == "ok"
+        for status in services.values()
+    )
+
+    message = (
+        "All services are healthy."
+        if is_healthy
+        else "One or more services are unhealthy."
+    )
 
     if is_healthy:
         return success_response(
@@ -42,9 +58,62 @@ def health_check(
             data={"services": services},
             status_code=200,
         )
-    else:
+
+    return fail_response(
+        message=message,
+        data={"services": services},
+        status_code=503,
+    )
+
+
+@base_router.get("/health/postgres")
+def postgres_health_check(
+    pg: PostgresClient = Depends(get_pg_client),
+):
+    """
+    PostgreSQL readiness check.
+    """
+    try:
+        with pg.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 AS ping")
+
+        return success_response(
+            message="PostgreSQL is healthy.",
+            data={"postgres": "ok"},
+            status_code=200,
+        )
+
+    except Exception as e:
+        logger.error(f"PostgreSQL health check failed: {e}")
         return fail_response(
-            message=message,
-            data={"services": services},
+            message="PostgreSQL is unhealthy.",
+            data={"postgres": f"error: {e}"},
+            status_code=503,
+        )
+
+
+@base_router.get("/health/neo4j")
+def neo4j_health_check(
+    neo4j: Neo4jClient = Depends(get_neo4j_client),
+):
+    """
+    Neo4j readiness check.
+    """
+
+    try:
+        neo4j.execute_query("RETURN 1 AS ping")
+        return success_response(
+            message="Neo4j is healthy.",
+            data={"neo4j": "ok"},
+            status_code=200,
+        )
+    
+    except Exception as e:
+        logger.error(f"Neo4j health check failed: {e}")
+
+        return fail_response(
+            message="Neo4j is unhealthy.",
+            data={"neo4j": f"error: {e}"},
             status_code=503,
         )

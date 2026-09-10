@@ -8,7 +8,6 @@ def success_response(
     data: Optional[Any] = None,
     status_code: int = 200,
 ) -> JSONResponse:
-
     return JSONResponse(
         status_code=status_code,
         content={
@@ -23,21 +22,14 @@ def success_response(
 def fail_response(
     message: str,
     data: Optional[Any] = None,
-    error: Optional[Any] = None,
     status_code: int = 400,
 ) -> JSONResponse:
-
-    content: dict[str, Any] = {
-        "success": False,
-        "status_code": status_code,
-        "message": message,
-        "data": jsonable_encoder(data),
-    }
-
-    if error is not None:
-        content["error"] = jsonable_encoder(str(error) if isinstance(error, Exception) else error)
-
     return JSONResponse(
         status_code=status_code,
-        content=content,
+        content={
+            "success": False,
+            "status_code": status_code,
+            "message": message,
+            "data": jsonable_encoder(data),
+        },
     )

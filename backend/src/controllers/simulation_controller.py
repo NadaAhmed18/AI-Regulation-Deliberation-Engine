@@ -2,21 +2,20 @@ import json
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
+import uuid
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from backend.src.routes.schemas import simulation
 from src.clients.postgres import PostgresClient
 from src.config import DATABASE_URL
-
+from src.utils.prompt_builder import render_prompt
+from src.clients.llm_client import LLMClient
+from src.orchestration.discussion_graph import DiscussionEngine
 
 class SimulationController:
-    """
-    Singleton Controller managing persistence and querying for simulations
-    and discussion history.
 
-    Maintains exactly ONE persistent PostgreSQL connection across the application lifecycle.
-    """
 
     _instance: Optional["SimulationController"] = None
     _lock: threading.Lock = threading.Lock()
@@ -35,10 +34,16 @@ class SimulationController:
 
         # Ensure database and base tables exist via PostgresClient
         PostgresClient()
+        
 
         self._conn: Optional[psycopg2.extensions.connection] = None
         self._connect()
         self._initialized = True
+        self.llm=LLMClient()  # Initialize the LLM client once for the controller
+        self.engine = DiscussionEngine()
+    
+
+        
 
     def _connect(self) -> None:
         """Initializes or resets the single persistent connection."""
@@ -69,21 +74,19 @@ class SimulationController:
             finally:
                 cursor.close()
 
-    # =========================================================================
-    # SIMULATION PERSISTENCE METHODS
-    # =========================================================================
 
     def create_simulation(
-        self, sim_id: str, topic: str, memory_strategy: dict, personas: list
+        self, sim_id: str, topic: str, memory_strategy: dict, personas: list,
+        visibility_matrix: Optional[Dict[str, List[str]]] = None
     ) -> None:
         """Saves a new session when the user clicks 'Generate Simulation'."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO simulations (simulation_id, topic, memory_strategy, personas)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO simulations (simulation_id, topic, memory_strategy, personas, visibility_matrix)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (sim_id, topic, json.dumps(memory_strategy), json.dumps(personas)),
+                (sim_id, topic, json.dumps(memory_strategy), json.dumps(personas), json.dumps(visibility_matrix) if visibility_matrix is not None else None),
             )
 
     def save_discussion_turn(
@@ -173,11 +176,17 @@ class SimulationController:
             return [dict(row) for row in rows]
 
     def get_simulation_by_id(self, sim_id: str) -> Optional[Dict[str, Any]]:
-        """Returns a single simulation's metadata, or None if it doesn't exist."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
-                SELECT simulation_id, topic, status, memory_strategy, personas, created_at
+                SELECT
+                    simulation_id,
+                    topic,
+                    status,
+                    memory_strategy,
+                    personas,
+                    visibility_matrix,
+                    created_at
                 FROM simulations
                 WHERE simulation_id = %s
                 """,
@@ -201,6 +210,285 @@ class SimulationController:
                 (sim_id,),
             )
             return cur.rowcount > 0
+
+    
+    def generate_personas(
+        self, topic: str, num_agents: int,
+        custom_prompt: Optional[str] = None, default_memory_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+
+        if not topic or not topic.strip():
+            raise ValueError("Topic cannot be empty.")
+
+        if not 2 <= num_agents <= 6:
+            raise ValueError("num_agents must be between 2 and 6.")
+
+        memory_type = default_memory_type or "sliding_window"
+
+        personas_prompt = render_prompt(
+            "setup_personas",
+            topic=topic,
+            num_agents=num_agents,
+            custom_instructions=custom_prompt or "None",
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert Simulation Designer and Sociologist. "
+                    "Follow the user's requested output format exactly."
+                ),
+            },
+            {
+                "role": "user",
+                "content": personas_prompt,
+            },
+        ]
+
+        try:
+            response = self.llm.generate_response(
+                messages=messages,
+                response_format="json_object",
+            )
+
+            # Persona generation must return normal text, not a tool call.
+            if response.get("type") != "text":
+                raise RuntimeError(
+                    "LLM returned a tool call instead of persona data."
+                )
+
+            content = response.get("content", "").strip()
+
+            if not content:
+                raise RuntimeError(
+                    "LLM returned an empty response while generating personas."
+                )
+
+            data = json.loads(content)
+            personas = data.get("personas")
+
+            if not isinstance(personas, list):
+                raise ValueError(
+                    "Invalid persona response: 'personas' must be a list."
+                )
+
+            # Make sure the LLM respected the requested number.
+            if len(personas) != num_agents:
+                raise ValueError(
+                    f"Expected {num_agents} personas, "
+                    f"but received {len(personas)}."
+                )
+
+            validated_personas: List[Dict[str, Any]] = []
+
+            for index, persona in enumerate(personas, start=1):
+
+                if not isinstance(persona, dict):
+                    raise ValueError(
+                        f"Persona #{index} must be a JSON object."
+                    )
+
+                required_fields = [
+                    "name",
+                    "background",
+                    "stance",
+                    "tone",
+                    "avatarSeed"
+                ]
+
+                missing_fields = [
+                    field
+                    for field in required_fields
+                    if not persona.get(field)
+                ]
+
+                if missing_fields:
+                    raise ValueError(
+                        f"Persona #{index} is missing required fields: "
+                        f"{', '.join(missing_fields)}"
+                    )
+
+                persona["memory_config"] = {
+                    "type": memory_type,
+                    "window_size": 4,
+                }
+
+                validated_personas.append(persona)
+
+            return validated_personas
+
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Failed to parse LLM persona response as JSON: {exc}"
+            ) from exc
+
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to generate personas: {exc}"
+            ) from exc
+
+    def start_simulation(
+        self, topic: str, personas: List[Dict[str, Any]],
+        memory_strategy: Dict[str, Any], visibility_matrix: Optional[Dict[str, List[str]]] = None,
+    ) -> str:
+
+        if not topic or not topic.strip():
+            raise ValueError("Topic cannot be empty.")
+
+        if not personas:
+            raise ValueError("At least one persona is required.")
+
+        if not memory_strategy:
+            memory_strategy = {
+                "type": "sliding_window",
+                "window_size": 4,
+            }
+
+        sim_id = f"sim_{uuid.uuid4().hex[:12]}"
+
+        self.create_simulation(
+            sim_id=sim_id,
+            topic=topic,
+            memory_strategy=memory_strategy,
+            personas=personas,
+            visibility_matrix=visibility_matrix,
+        )
+
+        return sim_id
+
+    def get_current_discussion_history(self, sim_id: str) -> List[Dict[str, Any]]:
+        with self._get_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, round_number, agent_name, role, content, opinion_snapshot, retrieved_sources, created_at
+                FROM discussion_history
+                WHERE simulation_id = %s
+                ORDER BY round_number ASC, id ASC
+                """,
+                (sim_id,),
+            )
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
+
+    def next_turn(self, simulation_id: str, intervention: Optional[str] = None) -> Dict[str, Any]:
+
+        simulation = self.get_simulation_by_id(simulation_id)
+
+        if not simulation:
+            raise ValueError(f"Simulation '{simulation_id}' not found.")
+
+        personas = simulation.get("personas") or []
+
+        if not personas:
+            raise ValueError(f"Simulation '{simulation_id}' has no personas.")
+
+        discussion_history = self.get_current_discussion_history(simulation_id)
+
+        memory_strategy = simulation.get("memory_strategy") or {}
+        visibility_matrix = simulation.get("visibility_matrix") or {}
+
+        turn_number = len(discussion_history)
+        agent_index = turn_number % len(personas)
+        current_persona = personas[agent_index]
+        round_number = (turn_number // len(personas)) + 1
+
+        return {
+            "simulation_id": simulation_id,
+            "round_number": round_number,
+            "turn_number": turn_number + 1,
+            "agent": current_persona,
+            "memory_strategy": memory_strategy,
+            "visibility_matrix": visibility_matrix,
+            "discussion_history": discussion_history,
+            "intervention": intervention,
+            "status": "ready_for_generation",
+        }
+
+    def simulation_analytics(
+        self, simulation_id: str,
+        current_turns: List[Dict[str, Any]], current_personas: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+
+        total_turns = len(current_turns)
+
+        unique_agents = len({
+            turn.get("agent_name") or turn.get("agent")
+            for turn in current_turns
+            if turn.get("agent_name") or turn.get("agent")
+        })
+
+        agent_counts: Dict[str, int] = {}
+
+        for turn in current_turns:
+            agent_name = turn.get("agent_name") or turn.get("agent")
+
+            if agent_name:
+                agent_counts[agent_name] = agent_counts.get(agent_name, 0) + 1
+
+        most_active_agent = None
+        most_active_agent_turns = 0
+
+        if agent_counts:
+            most_active_agent = max(agent_counts, key=agent_counts.get)
+            most_active_agent_turns = agent_counts[most_active_agent]
+
+        stance_scores = []
+
+        for turn in current_turns:
+            opinion = turn.get("opinion_snapshot") or {}
+            score = opinion.get("current_stance_score")
+
+            if score is not None:
+                try:
+                    stance_scores.append(float(score))
+                except (TypeError, ValueError):
+                    pass
+
+        avg_stance_score = (
+            sum(stance_scores) / len(stance_scores)
+            if stance_scores
+            else None
+        )
+
+        return {
+            "simulation_id": simulation_id,
+            "total_turns": total_turns,
+            "unique_agents": unique_agents,
+            "avg_stance_score": avg_stance_score,
+            "most_active_agent": most_active_agent,
+            "most_active_agent_turns": most_active_agent_turns,
+        }
+
+    def continue_simulation( self, simulation_id: str, intervention: Optional[str] = None, steps: int = 1,) -> Dict[str, Any]:
+  
+        if steps < 1:
+            raise ValueError("Steps must be at least 1.")
+
+        simulation = self.get_simulation_by_id(simulation_id)
+
+        if not simulation:
+            raise ValueError(f"Simulation '{simulation_id}' not found.")
+
+        visibility_matrix = simulation.get("visibility_matrix") or {}
+
+        final_state = self.engine.step_discussion(
+            sim_id=simulation_id,
+            steps=steps,
+            visibility_matrix=visibility_matrix,
+            intervention=intervention,
+        )
+
+        return {
+            "simulation_id": simulation_id,
+            "steps": steps,
+            "current_round": final_state.get("current_round"),
+            "current_speaker": final_state.get("current_speaker"),
+            "last_message": final_state.get("last_message"),
+            "last_sources": final_state.get("last_sources"),
+            "last_opinion": final_state.get("last_opinion"),
+        }
+
 
     def close(self) -> None:
         """Explicitly closes the shared database connection."""

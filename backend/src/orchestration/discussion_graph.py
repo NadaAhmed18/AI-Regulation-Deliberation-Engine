@@ -21,7 +21,6 @@ class DebateState(TypedDict):
     memory_strategy: dict
     max_rounds: int
     current_round: int
-
     current_speaker: str
     last_message: str
     last_sources: list
@@ -51,7 +50,6 @@ class DiscussionEngine:
         workflow.set_entry_point("orchestrate")
         workflow.add_edge("orchestrate", "agent_turn")
         workflow.add_edge("agent_turn", "grade_opinion")
-
         # Stop condition: loop until current_round reaches max_rounds
         workflow.add_conditional_edges(
             "grade_opinion",
@@ -112,10 +110,12 @@ class DiscussionEngine:
         # 4. Run the ReAct loop
         final_text, cited_sources = agent.run_react_loop(messages=messages)
 
-        return {
+        result: Dict[str, Any] = {
             "last_message": final_text,
-            "last_sources": cited_sources
+            "last_sources": cited_sources,
         }
+
+        return result
 
     def _grade_opinion(
             self,
@@ -185,7 +185,7 @@ class DiscussionEngine:
         self,
         sim_id: str,
         steps: int = 1,
-        visibility_matrix: Optional[Dict[str, List[str]]] = None
+        visibility_matrix: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         """
         Observability Entry Point: Runs the discussion for N steps and logs the trace to Langfuse.
@@ -202,6 +202,11 @@ class DiscussionEngine:
         topic: str = str(sim_data["topic"])
         personas: List[dict] = list(sim_data["personas"])
         memory_strat: dict = dict(sim_data["memory_strategy"])
+        # Prefer an explicitly-passed visibility_matrix (e.g. an ad-hoc override),
+        # falling back to whatever is persisted on the simulation record.
+        resolved_visibility_matrix: Dict[str, List[str]] = (
+            visibility_matrix if visibility_matrix is not None else dict(sim_data.get("visibility_matrix") or {})
+        )
 
         current_round: int = last_round
         target_round: int = current_round + steps
@@ -213,7 +218,7 @@ class DiscussionEngine:
             "simulation_id": sim_id,
             "topic": topic,
             "personas": personas,
-            "visibility_matrix": visibility_matrix or {},
+            "visibility_matrix": resolved_visibility_matrix,
             "memory_strategy": memory_strat,
             "max_rounds": target_round,
             "current_round": current_round,
@@ -240,7 +245,6 @@ if __name__ == "__main__":
     test_sim_id = f"test_sim_{uuid.uuid4().hex[:6]}"
     test_topic = "Should AI labs register GPU clusters above 10,000 units?"
 
-    # 1. Setup personas with distinct memory strategies
     setup_mgr = SetupManager()
     test_personas = [
         {
@@ -259,7 +263,6 @@ if __name__ == "__main__":
         },
     ]
 
-    # 2. Construct Visibility Matrix (Ring: Elena sees Alex, Alex sees Elena)
     test_vis_matrix = SetupManager.build_visibility_matrix(test_personas, topology="ring")
 
     # 3. Initialize Postgres simulation record using the Controller
@@ -274,7 +277,6 @@ if __name__ == "__main__":
 
     engine = DiscussionEngine()
 
-    # 4. Phase 1: Run 2 steps
     print("\n--- PHASE 1: Running 2 Initial Steps ---")
     state_after_2 = engine.step_discussion(
         sim_id=test_sim_id,
@@ -283,12 +285,11 @@ if __name__ == "__main__":
     )
     print(f"[✔] Phase 1 completed. Current round: {state_after_2['current_round']}")
 
-    # 5. Phase 2: Resume and run 1 more step
-    print("\n--- PHASE 2: Resuming for 1 Additional Step ---")
+    print("\n--- PHASE 2: Resuming for 1 Additional Step (with an intervention) ---")
     state_after_3 = engine.step_discussion(
         sim_id=test_sim_id,
         steps=1,
-        visibility_matrix=test_vis_matrix
+        visibility_matrix=test_vis_matrix,
     )
     print(f"[✔] Phase 2 completed. Final round reached: {state_after_3['current_round']}")
     print(f"[Last Speaker]: {state_after_3['current_speaker']}")

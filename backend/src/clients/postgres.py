@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Optional
+from typing import Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
 import psycopg2
 from psycopg2 import sql
@@ -56,6 +56,7 @@ class PostgresClient:
                         topic TEXT NOT NULL,
                         memory_strategy JSONB NOT NULL,
                         personas JSONB NOT NULL,
+                        visibility_matrix JSONB,
                         status VARCHAR(20) DEFAULT 'running',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -76,15 +77,18 @@ class PostgresClient:
                 """)
             conn.commit()
 
-    def create_simulation(self, sim_id: str, topic: str, memory_strategy: dict, personas: list):
+        
+
+    def create_simulation(self, sim_id: str, topic: str, memory_strategy: dict, personas: list, visibility_matrix: Optional[Dict[str, List[str]]] = None):
         """Saves a new session when the user clicks 'Generate Simulation'."""
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO simulations (simulation_id, topic, memory_strategy, personas)
-                    VALUES (%s, %s, %s, %s)
-                """, (sim_id, topic, json.dumps(memory_strategy), json.dumps(personas)))
+                    INSERT INTO simulations (simulation_id, topic, memory_strategy, personas, visibility_matrix)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (sim_id, topic, json.dumps(memory_strategy), json.dumps(personas), json.dumps(visibility_matrix) if visibility_matrix is not None else None))
             conn.commit()
+            
 
     def save_discussion_turn(self, sim_id: str, round_num: int, agent_name: str, role: str, content: str, opinion: Optional[dict] = None, sources: Optional[list] = None):
         """Saves an individual agent's turn to the history."""

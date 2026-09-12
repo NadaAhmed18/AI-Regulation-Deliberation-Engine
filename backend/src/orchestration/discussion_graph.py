@@ -3,11 +3,13 @@ from typing import List, Dict, Any, TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from langfuse import observe
 
-from src.clients.postgres import PostgresClient
+from src.controllers.simulation_controller import SimulationController
 from src.agent.memory.memory_manager import ConversationContextManager
 from src.agent.base_agent import BaseAgent
 from src.agent.orchestrator import Orchestrator
 from src.orchestration.opinion_grader import OpinionGrader
+from src.orchestration.nli_grader import DebertaStanceGrader
+from src import config
 
 
 # 1. State Definition
@@ -19,23 +21,24 @@ class DebateState(TypedDict):
     memory_strategy: dict
     max_rounds: int
     current_round: int
-
     current_speaker: str
     last_message: str
     last_sources: list
     last_opinion: dict
 
-    # FIX: added so a moderator intervention can actually reach the agent.
-    # Set once by step_discussion() for the FIRST turn of a run; consumed
-    # (and cleared) inside node_agent_turn so it doesn't leak into later turns.
-    pending_intervention: Optional[str]
-
 
 class DiscussionEngine:
     def __init__(self):
         self.orchestrator = Orchestrator()
-        self.opinion_grader = OpinionGrader()
-        self.db = PostgresClient()
+        self.controller = SimulationController()
+
+        # Stance grader: pluggable between the LLM-based OpinionGrader
+        # ("llm") and the local NLI-based DebertaStanceGrader ("nli", default),
+        # via the STANCE_GRADER_ENGINE env var (see config.py).
+        self.grader_engine = getattr(config, "STANCE_GRADER_ENGINE", "nli")
+        self.opinion_grader = (
+            DebertaStanceGrader() if self.grader_engine == "nli" else OpinionGrader()
+        )
 
         # Build the LangGraph Workflow
         workflow = StateGraph(DebateState)
@@ -47,7 +50,6 @@ class DiscussionEngine:
         workflow.set_entry_point("orchestrate")
         workflow.add_edge("orchestrate", "agent_turn")
         workflow.add_edge("agent_turn", "grade_opinion")
-
         # Stop condition: loop until current_round reaches max_rounds
         workflow.add_conditional_edges(
             "grade_opinion",
@@ -105,20 +107,6 @@ class DiscussionEngine:
             allowed_speakers=allowed_speakers
         )
 
-        # FIX: inject the pending moderator intervention (if any) as the final
-        # message the agent sees before it responds. Previously this value was
-        # threaded all the way from the API request down to next_turn()/
-        # continue_simulation() and then silently dropped — DebateState had no
-        # field for it and this node never read one.
-        intervention = state.get("pending_intervention")
-        intervention_applied = False
-        if intervention:
-            messages.append({
-                "role": "user",
-                "content": f"[Moderator Intervention]: {intervention}",
-            })
-            intervention_applied = True
-
         # 4. Run the ReAct loop
         final_text, cited_sources = agent.run_react_loop(messages=messages)
 
@@ -127,38 +115,58 @@ class DiscussionEngine:
             "last_sources": cited_sources,
         }
 
-        if intervention_applied:
-            # Persist the intervention itself as its own row so it's visible
-            # in discussion_history (and picked up by the role=="moderator"
-            # carve-out in ConversationContextManager's visibility filter).
-            self.db.save_discussion_turn(
-                sim_id=state["simulation_id"],
-                round_num=state["current_round"],
-                agent_name="moderator",
-                role="moderator",
-                content=intervention,
-            )
-            # Clear it so it isn't reapplied on subsequent turns/steps in this run.
-            result["pending_intervention"] = None
-
         return result
+
+    def _grade_opinion(
+            self,
+            topic: str,
+            agent_name: str,
+            original_stance: str,
+            latest_statement: str,
+            previous_score: Optional[float],
+        ) -> Dict[str, Any]:
+            """
+            Adapter over the two grader engines' differing evaluate_stance()
+            signatures. Uses isinstance to allow Pylance to resolve the differing types.
+            """
+            if isinstance(self.opinion_grader, DebertaStanceGrader):
+                return self.opinion_grader.evaluate_stance(
+                    topic=topic,
+                    statement=latest_statement,
+                    previous_score=previous_score,
+                )
+            elif isinstance(self.opinion_grader, OpinionGrader):
+                return self.opinion_grader.evaluate_stance(
+                    topic=topic,
+                    agent_name=agent_name,
+                    original_stance=original_stance,
+                    latest_statement=latest_statement,
+                    previous_score=previous_score,
+                )
+            raise TypeError(f"Unsupported grader engine: {type(self.opinion_grader)}")
 
     @observe(as_type="generation", name="node_grade_opinion")
     def node_grade_opinion(self, state: DebateState) -> Dict[str, Any]:
-        """Evaluates opinion shift and persists turn to PostgreSQL."""
+        """Evaluates opinion shift and persists turn to PostgreSQL via SimulationController."""
         speaker_name = state["current_speaker"]
         persona = next((p for p in state["personas"] if p["name"] == speaker_name), state["personas"][0])
 
-        opinion_snapshot = self.opinion_grader.evaluate_stance(
+        # Fetch the agent's real previous score (None on first turn)
+        previous_score = self.controller.get_last_stance_score(
+            sim_id=state["simulation_id"],
+            agent_name=speaker_name,
+        )
+
+        opinion_snapshot = self._grade_opinion(
             topic=state["topic"],
             agent_name=speaker_name,
             original_stance=persona["stance"],
             latest_statement=state["last_message"],
-            previous_score=0.0
+            previous_score=previous_score,
         )
 
         # Persist turn
-        self.db.save_discussion_turn(
+        self.controller.save_discussion_turn(
             sim_id=state["simulation_id"],
             round_num=state["current_round"],
             agent_name=speaker_name,
@@ -178,39 +186,18 @@ class DiscussionEngine:
         sim_id: str,
         steps: int = 1,
         visibility_matrix: Optional[Dict[str, List[str]]] = None,
-        intervention: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Observability Entry Point: Runs the discussion for N steps and logs the trace to Langfuse.
-        Pulls latest state from PostgreSQL so simulations can be paused and resumed on demand.
-
-        FIX: added `intervention` param. It's applied to only the FIRST turn of
-        this run (mirrors the old controller-level "intervention is applied only
-        to the first turn" comment), via DebateState.pending_intervention.
+        Pulls latest state via SimulationController so simulations can be paused and resumed on demand.
         """
         # 1. Fetch simulation configuration from DB
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    # FIX: also select visibility_matrix so a caller that forgets
-                    # to pass it explicitly still gets the persisted graph instead
-                    # of silently falling back to "everyone sees everyone".
-                    "SELECT topic, memory_strategy, personas, visibility_matrix FROM simulations WHERE simulation_id = %s",
-                    (sim_id,)
-                )
-                raw_sim_row = cur.fetchone()
-                if not raw_sim_row:
-                    raise ValueError(f"Simulation ID '{sim_id}' not found in database.")
+        sim_data = self.controller.get_simulation_by_id(sim_id)
+        if not sim_data:
+            raise ValueError(f"Simulation ID '{sim_id}' not found in database.")
 
-                sim_data: Dict[str, Any] = dict(raw_sim_row)
-
-                # 2. Get the highest round currently played
-                cur.execute(
-                    "SELECT COALESCE(MAX(round_number), 0) AS last_round FROM discussion_history WHERE simulation_id = %s",
-                    (sim_id,)
-                )
-                raw_round_row = cur.fetchone()
-                last_round: int = int(dict(raw_round_row)["last_round"]) if raw_round_row else 0
+        # 2. Get the highest round currently played
+        last_round = self.controller.get_last_round_number(sim_id)
 
         topic: str = str(sim_data["topic"])
         personas: List[dict] = list(sim_data["personas"])
@@ -238,8 +225,7 @@ class DiscussionEngine:
             "current_speaker": "",
             "last_message": "",
             "last_sources": [],
-            "last_opinion": {},
-            "pending_intervention": intervention,
+            "last_opinion": {}
         }
 
         final_state: Dict[str, Any] = self.graph.invoke(resume_state)
@@ -279,8 +265,9 @@ if __name__ == "__main__":
 
     test_vis_matrix = SetupManager.build_visibility_matrix(test_personas, topology="ring")
 
-    db_client = PostgresClient()
-    db_client.create_simulation(
+    # 3. Initialize Postgres simulation record using the Controller
+    controller = SimulationController()
+    controller.create_simulation(
         sim_id=test_sim_id,
         topic=test_topic,
         memory_strategy={"type": "sliding_window", "window_size": 3},
@@ -303,7 +290,6 @@ if __name__ == "__main__":
         sim_id=test_sim_id,
         steps=1,
         visibility_matrix=test_vis_matrix,
-        intervention="Focus specifically on enforcement costs for small labs.",
     )
     print(f"[✔] Phase 2 completed. Final round reached: {state_after_3['current_round']}")
     print(f"[Last Speaker]: {state_after_3['current_speaker']}")

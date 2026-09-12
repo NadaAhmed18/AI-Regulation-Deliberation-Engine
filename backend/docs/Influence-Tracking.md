@@ -96,6 +96,16 @@ CREATE TABLE discussion_history (
 }
 ```
 
+##### Implementation Note: `PostgresClient.get_last_stance_score(sim_id, agent_name)`
+Added alongside the stance-grading pipeline to fetch an agent's real
+`current_stance_score` from their most recent row in
+`discussion_history`, returning `None` (not `0.0`) if the agent has no
+prior scored turn yet. `node_grade_opinion` (`discussion_graph.py`)
+calls this before grading each turn and passes the result straight
+through as `previous_score`, instead of the placeholder `0.0` used
+earlier — see Section 3's Implementation Notes for why that distinction
+matters for `shift_magnitude`.
+
 ---
 
 ### B. Neo4j (Graph-Augmented RAG Store)
@@ -210,6 +220,60 @@ if __name__ == "__main__":
     # Expected output: high pro_probability, current_stance_score > 3.0
 ```
 
+### C. Implementation Notes (deviations from the spec above)
+
+- **Model**: `cross-encoder/nli-deberta-v3-large` is used instead of
+  `-small`. Same model family and 3-way label scheme (`contradiction` /
+  `neutral` / `entailment`) as the spec above, just the larger checkpoint.
+  Chosen over `MoritzLaurer/deberta-v3-base-zeroshot-v2.0` (a
+  zero-shot-specific model with binary entailment/not_entailment labels
+  that was also benchmarked) to stay on the spec's standard 3-way NLI
+  family; benchmarking across ~15 varied statements
+  (`compare_nli_models.py` / `benchmark_nli_models.py`) found the
+  MoritzLaurer models scored higher sign-accuracy at comparable or lower
+  latency in that specific test set, so if accuracy on this project's
+  actual statements turns out too low in practice, they remain the
+  better-evidenced fallback.
+- **Label indices**: read dynamically from the loaded model's
+  `config.id2label` (`_find_label_indices`) instead of hardcoded
+  (`self.entailment_idx = 1`), so swapping `model_name` doesn't require a
+  code change. This also locates the contradiction index (see next
+  point), not only entailment.
+- **Two-way softmax, not three-way**: entailment probability is computed
+  by softmaxing ONLY the entailment and contradiction logits, discarding
+  "neutral" entirely — not a full softmax over all 3 classes. For a
+  binary (entailment/not_entailment) model these are identical, so this
+  was never an issue with the spec's original `-small` model or with the
+  binary MoritzLaurer models; it matters specifically for this 3-way
+  model, where a full 3-way softmax lets neutral probability mass dilute
+  the entailment score, and where it also matches how
+  `transformers.pipeline("zero-shot-classification", ...,
+  multi_label=True)` scored each hypothesis in this project's own model
+  benchmarking above — keeping the live grader's numbers aligned with
+  what was actually benchmarked to justify this model choice.
+- **Hypothesis phrasing**: `"The speaker is in favor of {topic}."` /
+  `"The speaker is opposed to {topic}."` ("simple" phrasing), not the
+  spec's longer `"This statement supports and argues in favor of
+  {topic}."` form. Benchmarking both phrasings on the same statements
+  across all 3 candidate models showed the simple form scored
+  equal-or-better in every case. `pro_proposition`/`anti_proposition`
+  parameters allow overriding this per call for topics that need a more
+  specific proposition (see `evaluate_stance`'s docstring).
+- **Batching**: the pro/anti hypothesis pairs are sent in a single
+  batched forward pass instead of two sequential calls.
+- **`previous_score`**: defaults to `None` (no prior turn), not `0.0`.
+  `0.0` is a genuine neutral prior score; `None` means "no score exists
+  yet for this agent." The caller is responsible for fetching the
+  agent's actual previous score (e.g. from `discussion_history` in
+  PostgreSQL) rather than always passing `0.0` — see the fix in
+  `node_grade_opinion` (`discussion_graph.py`) and
+  `PostgresClient.get_last_stance_score`.
+- The score/shift math itself is extracted into
+  `backend/src/utils/stance_utils.py` so it's unit-testable without a
+  model loaded, and reusable by Week 4 analytics and by `OpinionGrader`
+  (`opinion_grader.py` also calls `stance_utils.compute_shift_magnitude`,
+  so both graders treat a missing prior score identically).
+
 ---
 
 ## 4. The Influence Network & Tracking Specification
@@ -229,7 +293,9 @@ When **Agent B** speaks immediately following **Agent A**, we measure whether Ag
 *   $\Delta = 0$: **Zero Influence**.
 
 ### B. Influence Graph Calculation (Code Utility)
-Add this utility to compute the complete influence matrix across an entire debate:
+Add this utility to compute the complete influence matrix across an entire debate.
+(This exists as `backend/src/orchestration/influence_tracker.py` — see the
+Implementation Notes below for two bug fixes vs. this reference code.)
 
 ```python
 # backend/src/orchestration/influence_tracker.py
@@ -273,6 +339,41 @@ def compute_influence_matrix(history_rows: List[Dict[str, Any]], personas: List[
 
     return matrix
 ```
+
+### C. Implementation Notes (deviations from the reference code above)
+
+The actual implementation in `backend/src/orchestration/influence_tracker.py`
+fixes two bugs in the reference code shown in section B above:
+
+- **`None` vs. `0.0` for "no known stance yet"**: the reference code
+  initializes every agent's `current_stances[name]` to `0.0` before the
+  discussion starts. That conflates "this agent's stance is genuinely
+  neutral" with "this agent hasn't been scored yet, so no stance is
+  known" — which can register a large, spurious "influence" event on an
+  agent's very first turn, measured against a `0.0` nobody ever actually
+  held. The real implementation tracks each agent's known stance as
+  `Optional[float]` (`None` until scored) and skips the convergence
+  calculation entirely whenever either endpoint's stance is still
+  unknown. This mirrors the same `None`-vs-`0.0` distinction used for
+  `previous_score` throughout the stance-grading pipeline — see
+  `stance_utils.compute_shift_magnitude` and
+  `PostgresClient.get_last_stance_score`.
+- **Every turn updates the *speaker's own* tracked stance, not only the
+  turn's "target"**: the reference loop only ever writes
+  `current_stances[target] = ...`, so an agent's own first turn is never
+  recorded into `current_stances` unless that agent later appears as
+  someone else's "target" — silently losing the very first speaker's
+  real opening stance for as long as they keep speaking as "influencer"
+  without ever being scored as "target" first. The real implementation
+  records `current_stances[row["agent_name"]]` on every row,
+  unconditionally, so an agent's latest known stance is always available
+  from their own turns.
+
+Both fixes only change behavior for edge cases (an agent's first-ever
+turn, or a discussion history that doesn't start with every agent
+speaking as "target" at least once) — normal multi-round discussions
+where everyone has spoken and been spoken-to at least once are scored
+identically either way.
 
 ---
 

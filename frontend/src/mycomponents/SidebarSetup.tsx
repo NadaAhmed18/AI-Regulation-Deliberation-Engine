@@ -348,7 +348,7 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
               Databases
             </span>
             <span className="text-[9px] text-muted-foreground font-mono">
-              {isCheckingHealth ? "Checking..." : health.status.toUpperCase()}
+                {isCheckingHealth ? "Checking..." : (health?.status || "UNKNOWN").toUpperCase()}
             </span>
           </div>
 

@@ -375,7 +375,7 @@ def get_simulation_analytics_post(
 # 8. ADVANCE / CONTINUE SIMULATION
 # ============================================================================
 @simulation_router.post("/simulations/{simulation_id}/continue")
-def continue_simulation_with_intervention(
+def continue_simulation(
     simulation_id: str,
     continue_request: ContinueSimulationRequest,
 ):
@@ -384,7 +384,6 @@ def continue_simulation_with_intervention(
     try:
         result = simulation_controller.continue_simulation(
             simulation_id=simulation_id,
-            intervention=continue_request.intervention,
             steps=continue_request.steps,
         )
         return success_response(

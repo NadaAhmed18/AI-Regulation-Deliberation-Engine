@@ -12,14 +12,16 @@ User Custom Instructions (if any): {custom_instructions}
 - Do not make them caricatures; give them nuanced stances.
 
 # Output Format
-You MUST output a raw JSON array containing exactly {num_agents} objects. Do not include markdown formatting or explanations. 
+You MUST output a valid JSON object with a "personas" key containing an array of exactly {num_agents} objects. Do not include markdown formatting or conversational text.
 
 Example Output:
-[
-  {{
-    "name": "Dr. Aris Thorne",
-    "background": "Former Lead Researcher at a major AI lab, now an independent safety auditor.",
-    "stance": "Believes open-source AI is dangerous without strict licensing and compute caps.",
-    "tone": "Academic, urgent, slightly condescending."
-  }}
-]
+{{
+  "personas": [
+    {{
+      "name": "Dr. Aris Thorne",
+      "background": "Former Lead Researcher at a major AI lab, now an independent safety auditor.",
+      "stance": "Believes open-source AI is dangerous without strict licensing and compute caps.",
+      "tone": "Academic, urgent, slightly condescending."
+    }}
+  ]
+}}

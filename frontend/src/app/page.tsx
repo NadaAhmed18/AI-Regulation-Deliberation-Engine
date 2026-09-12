@@ -20,16 +20,10 @@ export default function Home() {
     useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Generate initial personas
-  useEffect(() => {
-    SimulationAPI.generatePersonas(topic, 3)
-      .then(setPersonas)
-      .catch((err) => setErrorMessage(extractErrorMessage(err)));
-  }, [topic]);
-
   const handleTopicChange = (selectedTopic: string) => {
     setTopic(selectedTopic);
     setIsConfiguring(true);
+    setPersonas([]);
     setTurns([]);
     setErrorMessage(null);
   };

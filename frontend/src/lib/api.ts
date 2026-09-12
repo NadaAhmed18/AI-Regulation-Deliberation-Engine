@@ -132,8 +132,14 @@ export const SimulationAPI = {
             return { status: "healthy", neo4j: true, postgres: true, message: "Mock Mode" };
         }
         try {
-            const response = await apiClient.get<HealthCheckResponse>("/health");
-            return response.data;
+            const response = await apiClient.get("/health");
+            const payload = response.data?.data || response.data;
+            return {
+                status: payload.status || "healthy",
+                neo4j: Boolean(payload.neo4j),
+                postgres: Boolean(payload.postgres),
+                message: payload.message,
+            };
         } catch (error) {
             return {
                 status: "unhealthy",

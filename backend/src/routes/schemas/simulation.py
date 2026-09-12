@@ -46,7 +46,6 @@ class StartSimulationResponse(BaseModel):
 
 
 class ContinueSimulationRequest(BaseModel):
-    intervention: Optional[str] = None
     steps: int = Field(default=1, ge=1)
 
 

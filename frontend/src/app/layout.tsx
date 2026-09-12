@@ -34,6 +34,7 @@ export default function RootLayout({
         />
       </head>
       <body
+        suppressHydrationWarning
         className={`${inter.className} bg-background text-foreground antialiased selection:bg-teal-500/20`}
       >
         <TooltipProvider delay={200}>{children}</TooltipProvider>

@@ -5,7 +5,7 @@ import { SidebarSetup } from "@/mycomponents/SidebarSetup";
 import { DebateArena } from "@/mycomponents/DebateArena";
 import { AnalyticsDashboard } from "@/mycomponents/AnalyticsDashboard";
 import { Persona, DiscussionTurn } from "@/types/simulation";
-import { SimulationAPI } from "@/lib/api";
+import { SimulationAPI, extractErrorMessage } from "@/lib/api";
 
 export default function Home() {
   const [topic, setTopic] = useState<string>(
@@ -18,29 +18,38 @@ export default function Home() {
   const [simulationId, setSimulationId] = useState<string>("");
   const [isAnalyticsExpanded, setIsAnalyticsExpanded] =
     useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Load initial personas once on mount
+  // Generate initial personas
   useEffect(() => {
-    SimulationAPI.generatePersonas(topic, 3).then(setPersonas);
+    SimulationAPI.generatePersonas(topic, 3)
+      .then(setPersonas)
+      .catch((err) => setErrorMessage(extractErrorMessage(err)));
   }, [topic]);
 
-  // Topic change preserves personas so custom ones are not lost
   const handleTopicChange = (selectedTopic: string) => {
     setTopic(selectedTopic);
     setIsConfiguring(true);
     setTurns([]);
+    setErrorMessage(null);
   };
 
-  const handleStartSimulation = async () => {
+  const handleStartSimulation = async (config?: {
+    memoryStrategy: { type: string; window_size: number };
+    visibilityMatrix: Record<string, string[]>;
+  }) => {
     if (personas.length < 2) return;
     setIsRunning(true);
     setIsConfiguring(false);
     setTurns([]);
+    setErrorMessage(null);
 
     try {
       const { simulation_id } = await SimulationAPI.startSimulation(
         topic,
         personas,
+        config?.memoryStrategy,
+        config?.visibilityMatrix,
       );
       setSimulationId(simulation_id);
 
@@ -50,18 +59,26 @@ export default function Home() {
         turn = await SimulationAPI.nextTurn(simulation_id);
       }
     } catch (err) {
-      console.error("Simulation execution error:", err);
+      setErrorMessage(extractErrorMessage(err));
     } finally {
       setIsRunning(false);
     }
   };
 
-  const handleContinueSimulation = async (interventionPrompt?: string) => {
+  const handleContinueSimulation = async (
+    interventionPrompt?: string,
+    steps: number = 1,
+  ) => {
     if (!simulationId) return;
     setIsRunning(true);
+    setErrorMessage(null);
 
     try {
-      await SimulationAPI.continueSimulation(simulationId, interventionPrompt);
+      await SimulationAPI.continueSimulation(
+        simulationId,
+        interventionPrompt,
+        steps,
+      );
 
       let turn = await SimulationAPI.nextTurn(simulationId);
       while (turn !== null) {
@@ -69,7 +86,7 @@ export default function Home() {
         turn = await SimulationAPI.nextTurn(simulationId);
       }
     } catch (err) {
-      console.error("Error continuing simulation:", err);
+      setErrorMessage(extractErrorMessage(err));
     } finally {
       setIsRunning(false);
     }
@@ -87,9 +104,11 @@ export default function Home() {
         personas={personas}
         topic={topic}
         isRunning={isRunning}
+        onError={setErrorMessage}
         onNew={() => {
           setIsConfiguring(true);
           setTurns([]);
+          setErrorMessage(null);
         }}
         onSelectTopic={handleTopicChange}
       />
@@ -99,6 +118,9 @@ export default function Home() {
         topic={topic}
         isRunning={isRunning}
         isConfiguring={isConfiguring}
+        errorMessage={errorMessage}
+        onClearError={() => setErrorMessage(null)}
+        onError={setErrorMessage}
         onStartSimulation={handleStartSimulation}
         onUpdateTopic={setTopic}
         onUpdatePersonas={setPersonas}

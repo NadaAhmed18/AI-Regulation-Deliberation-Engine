@@ -21,11 +21,15 @@ import {
   Share2,
   X,
   Sparkles,
-  GitFork,
+  Database,
   Radio,
 } from "lucide-react";
 import { Persona, DebateHistoryItem } from "@/types/simulation";
-import { SimulationAPI } from "@/lib/api";
+import {
+  SimulationAPI,
+  HealthCheckResponse,
+  extractErrorMessage,
+} from "@/lib/api";
 
 const subscribeTheme = (callback: () => void) => {
   const observer = new MutationObserver(callback);
@@ -43,17 +47,16 @@ const subscribeTheme = (callback: () => void) => {
 const getThemeSnapshot = () =>
   typeof document !== "undefined" &&
   document.documentElement.classList.contains("dark");
-
 const getServerSnapshot = () => false;
 
 export interface SidebarSetupProps {
   personas: Persona[];
   topic: string;
   isRunning?: boolean;
-  onStart?: () => void;
   onNew?: () => void;
   onSelectTopic?: (topic: string) => void;
   onDeleteCurrentTopic?: () => void;
+  onError?: (message: string) => void;
 }
 
 export const SidebarSetup: React.FC<SidebarSetupProps> = ({
@@ -63,11 +66,20 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
   onNew,
   onSelectTopic,
   onDeleteCurrentTopic,
+  onError,
 }) => {
   const [history, setHistory] = useState<DebateHistoryItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("sim-1");
+  const [selectedId, setSelectedId] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTopicDismissed, setActiveTopicDismissed] = useState(false);
+
+  // Live Database Health State
+  const [health, setHealth] = useState<HealthCheckResponse>({
+    status: "healthy",
+    neo4j: false,
+    postgres: false,
+  });
+  const [isCheckingHealth, setIsCheckingHealth] = useState(true);
 
   const isDark = useSyncExternalStore(
     subscribeTheme,
@@ -75,18 +87,48 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
     getServerSnapshot,
   );
 
+  // Poll database health and fetch debate history
   useEffect(() => {
     let isMounted = true;
+
+    const checkSystemHealth = () => {
+      SimulationAPI.checkHealth()
+        .then((res) => {
+          if (isMounted) {
+            setHealth(res);
+            setIsCheckingHealth(false);
+          }
+        })
+        .catch((err) => {
+          if (isMounted) {
+            setHealth({
+              status: "unhealthy",
+              neo4j: false,
+              postgres: false,
+              message: extractErrorMessage(err),
+            });
+            setIsCheckingHealth(false);
+          }
+        });
+    };
+
+    checkSystemHealth();
+    const interval = setInterval(checkSystemHealth, 30000);
+
     SimulationAPI.getInitialHistory()
       .then((data) => {
         if (isMounted) setHistory(data);
       })
-      .catch((err) => console.error("Failed to load debate history:", err));
+      .catch((err) => {
+        console.error("Failed to load debate history:", err);
+        onError?.(extractErrorMessage(err));
+      });
 
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
-  }, []);
+  }, [onError]);
 
   const toggleTheme = (targetDark: boolean) => {
     if (targetDark) {
@@ -105,7 +147,7 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
       setHistory((prev) => prev.filter((item) => item.id !== id));
       if (selectedId === id) setSelectedId("");
     } catch (err) {
-      console.error("Failed to delete history item:", err);
+      onError?.(`Failed to delete topic: ${extractErrorMessage(err)}`);
     }
   };
 
@@ -131,32 +173,26 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="relative flex items-center justify-center h-8 w-8 rounded-lg bg-teal-600 dark:bg-teal-500 text-white shadow-sm ring-1 ring-teal-500/20 shrink-0">
             <Share2 className="w-4 h-4 rotate-45" />
-            <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-300 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
-            </span>
           </div>
           <div className="truncate">
             <h1 className="text-xs font-bold tracking-tight text-foreground truncate">
               Qubeterra
             </h1>
             <p className="text-[10px] text-muted-foreground font-medium truncate">
-              Multi-Agent Orchestrator
+              Multi-Agent Deliberation
             </p>
           </div>
         </div>
 
-        {/* New Deliberation Button */}
         <Button
           size="sm"
           variant="outline"
-          className="h-7 px-2 text-xs border-teal-600/30 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/50 transition-colors shadow-2xs cursor-pointer"
+          className="h-7 px-2 text-xs border-teal-600/30 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/50 cursor-pointer"
           onClick={() => {
             setActiveTopicDismissed(false);
             setSelectedId("");
             onNew?.();
           }}
-          title="Configure a new debate"
         >
           <Plus className="w-3.5 h-3.5 mr-1" />
           New
@@ -188,7 +224,7 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
       {/* 3. Active Topic Preview */}
       {!activeTopicDismissed && topic && (
         <div className="px-3 py-1.5">
-          <Card className="relative p-2.5 bg-card/80 dark:bg-card/50 border-teal-500/25 dark:border-teal-500/20 shadow-xs group transition-all hover:border-teal-500/40">
+          <Card className="p-2.5 bg-card/80 dark:bg-card/50 border-teal-500/25 shadow-xs transition-all hover:border-teal-500/40">
             <div className="flex items-center justify-between gap-1 mb-1.5">
               <span className="text-[9px] uppercase tracking-wider font-bold text-teal-700 dark:text-teal-400 flex items-center gap-1">
                 <Sparkles className="w-2.5 h-2.5 text-teal-500" />
@@ -198,18 +234,16 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
               <div className="flex items-center gap-1.5">
                 <Badge
                   variant="secondary"
-                  className="text-[9px] px-1.5 py-0 h-4 font-medium bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-300 border-none"
+                  className="text-[9px] px-1.5 py-0 h-4 bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-300 border-none"
                 >
                   {personas.length} Nodes
                 </Badge>
-
                 <button
                   onClick={() => {
                     setActiveTopicDismissed(true);
                     onDeleteCurrentTopic?.();
                   }}
-                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 p-1 rounded transition-colors cursor-pointer"
-                  title="Remove this active topic"
+                  className="text-muted-foreground hover:text-destructive p-1 rounded transition-colors"
                 >
                   <Trash2 className="w-3 h-3" />
                 </button>
@@ -223,12 +257,12 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
             {isRunning ? (
               <div className="mt-2 flex items-center gap-1.5 text-[10px] text-teal-600 dark:text-teal-400 font-medium">
                 <Radio className="w-3 h-3 text-teal-500 animate-pulse" />
-                <span>Live debate underway in Arena...</span>
+                <span>Live debate underway...</span>
               </div>
             ) : (
               <div className="mt-1.5 text-[10px] text-muted-foreground flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-teal-500/60" />
-                <span>Configured in Arena</span>
+                <span>Ready in Arena</span>
               </div>
             )}
           </Card>
@@ -267,10 +301,10 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
                     >
                       <div className="flex items-center gap-2 min-w-0 pr-1">
                         <MessageSquare
-                          className={`w-3.5 h-3.5 shrink-0 transition-colors ${
+                          className={`w-3.5 h-3.5 shrink-0 ${
                             isSelected
                               ? "text-teal-600 dark:text-teal-400"
-                              : "text-muted-foreground/70 group-hover:text-teal-600 dark:group-hover:text-teal-400"
+                              : "text-muted-foreground/70 group-hover:text-teal-600"
                           }`}
                         />
                         <span className="truncate text-[11px] leading-snug">
@@ -281,17 +315,12 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
                       <div className="flex items-center gap-1 shrink-0 ml-1">
                         <button
                           onClick={(e) => handleDeleteItem(e, item.id)}
-                          className="opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 p-1 rounded transition-all text-muted-foreground cursor-pointer"
-                          title="Delete topic from history"
+                          className="opacity-0 group-hover:opacity-100 hover:text-destructive p-1 rounded transition-all text-muted-foreground"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
                         <ChevronRight
-                          className={`w-3 h-3 transition-opacity ${
-                            isSelected
-                              ? "text-teal-600 dark:text-teal-400 opacity-100"
-                              : "opacity-0 group-hover:opacity-40"
-                          }`}
+                          className={`w-3 h-3 ${isSelected ? "text-teal-600 opacity-100" : "opacity-0 group-hover:opacity-40"}`}
                         />
                       </div>
                     </div>
@@ -305,28 +334,58 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
         {filteredHistory.length === 0 && (
           <div className="py-8 text-center px-4 text-muted-foreground space-y-1">
             <MessageSquare className="w-6 h-6 mx-auto opacity-30 text-teal-500" />
-            <p className="text-xs font-medium">No discussions found</p>
+            <p className="text-xs font-medium">No past discussions</p>
           </div>
         )}
       </div>
 
-      {/* 5. Theme Switcher Footer */}
-      <div className="p-2.5 border-t border-border/70 bg-sidebar/90 backdrop-blur space-y-2">
-        <div className="flex items-center justify-between px-1 text-[10px] text-muted-foreground">
-          <span className="flex items-center gap-1.5 font-medium">
-            <GitFork className="w-3 h-3 text-teal-600 dark:text-teal-400" />
-            Graph Engine
-          </span>
-          <span className="text-teal-700 dark:text-teal-300 font-semibold flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            Connected
-          </span>
+      {/* 5. Live Database Connection Health Footer */}
+      <div className="p-2.5 border-t border-border/70 bg-sidebar/95 backdrop-blur space-y-2">
+        <div className="rounded-md bg-muted/40 p-2 border border-border/50 space-y-1.5">
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="font-semibold text-foreground flex items-center gap-1">
+              <Database className="w-3 h-3 text-teal-600 dark:text-teal-400" />
+              Databases
+            </span>
+            <span className="text-[9px] text-muted-foreground font-mono">
+              {isCheckingHealth ? "Checking..." : health.status.toUpperCase()}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1 text-[10px]">
+            {/* PostgreSQL Indicator */}
+            <div className="flex items-center gap-1.5 p-1 rounded bg-background/60 border border-border/40">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  health.postgres
+                    ? "bg-emerald-500 animate-pulse"
+                    : "bg-rose-500"
+                }`}
+              />
+              <span className="text-muted-foreground font-mono text-[9px]">
+                Postgres
+              </span>
+            </div>
+
+            {/* Neo4j Indicator */}
+            <div className="flex items-center gap-1.5 p-1 rounded bg-background/60 border border-border/40">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  health.neo4j ? "bg-emerald-500 animate-pulse" : "bg-rose-500"
+                }`}
+              />
+              <span className="text-muted-foreground font-mono text-[9px]">
+                Neo4j
+              </span>
+            </div>
+          </div>
         </div>
 
+        {/* Theme Toggle */}
         <div className="flex items-center p-0.5 rounded-lg bg-muted/60 border border-border/60">
           <button
             onClick={() => toggleTheme(false)}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1 text-[11px] font-medium rounded-md transition-all cursor-pointer ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1 text-[11px] font-medium rounded-md transition-all ${
               !isDark
                 ? "bg-background text-teal-700 shadow-2xs font-semibold"
                 : "text-muted-foreground hover:text-foreground"
@@ -337,7 +396,7 @@ export const SidebarSetup: React.FC<SidebarSetupProps> = ({
           </button>
           <button
             onClick={() => toggleTheme(true)}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1 text-[11px] font-medium rounded-md transition-all cursor-pointer ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1 text-[11px] font-medium rounded-md transition-all ${
               isDark
                 ? "bg-card text-teal-300 shadow-2xs font-semibold"
                 : "text-muted-foreground hover:text-foreground"

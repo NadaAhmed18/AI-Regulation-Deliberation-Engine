@@ -1,70 +1,120 @@
 import logging
-from typing import Optional
-from backend.src.controllers import simulation_controller
+import uuid
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+
 from fastapi import APIRouter, HTTPException, Query, Depends
 
 from src.agent.tools.retriever import search_ai_policy
-from ..utils.response import success_response, fail_response
-from src.clients.postgres import PostgresClient
-from .dependencies import get_pg_client
+from src.utils.response import success_response, fail_response
 from src.controllers.simulation_controller import SimulationController
-from .schemas.simulation import (ContinueSimulationRequest, DebateHistoryItem, DiscussionTurn 
-                                 ,GeneratePersonasRequest, Persona, SimulationAnalyticsRequest, StartSimulationRequest)
-
+from src.routes.schemas.simulation import (
+    ContinueSimulationRequest,
+    GeneratePersonasRequest,
+    SimulationAnalyticsRequest,
+    StartSimulationRequest,
+)
 
 logger = logging.getLogger("uvicorn")
 simulation_router = APIRouter(tags=["simulations"])
 
 
-
+# ============================================================================
+# 1. PREDEFINED TOPICS
+# ============================================================================
 @simulation_router.get("/topics/predefined")
 def list_predefined_topics():
-    pass
+    topics = [
+        {
+            "id": "topic-1",
+            "title": "Should governments mandate hardware-level kill-switches for frontier open-source AI?",
+            "tag": "Frontier Security",
+            "description": "Focuses on dual-use weight proliferation, foundry locks, and existential risk prevention.",
+        },
+        {
+            "id": "topic-2",
+            "title": "EU AI Act Article 51: Should training clusters >10^26 FLOPs face strict third-party audit vetoes?",
+            "tag": "Regulatory Compliance",
+            "description": "Balancing European single-market innovation with systemic catastrophe mitigation.",
+        },
+        {
+            "id": "topic-3",
+            "title": "Should AI developers be held strictly liable for copyright infringement in pre-training data scraping?",
+            "tag": "IP & Synthetic Data",
+            "description": "Fair use doctrines vs fair compensation for human creators in the age of generative models.",
+        },
+        {
+            "id": "topic-4",
+            "title": "Autonomous algorithmic trading agents: Mandate simulated sandbox isolation before exchange deployment?",
+            "tag": "Financial Stability",
+            "description": "Flash crash prevention, collusion between emergent LLM agents, and regulatory kill-circuits.",
+        },
+    ]
+    return success_response(
+        message="Predefined topics retrieved.",
+        data=topics,
+        status_code=200,
+    )
 
 
-
-
+# ============================================================================
+# 2. SIMULATION HISTORY LIST
+# ============================================================================
 @simulation_router.get("/simulations/history-list")
 def get_initial_history():
-
     simulation_controller = SimulationController()
 
     try:
         simulations = simulation_controller.get_all_simulations()
 
-        # FIX: was `[{ DebateHistoryItem(...) }]` — a set containing one item,
-        # not a list — and read `simulation["id"]` which doesn't exist
-        # (get_all_simulations() rows are keyed "simulation_id").
-        history = [
-            DebateHistoryItem(
-                id=simulation["simulation_id"],
-                topic=simulation["topic"],
-                status=simulation.get("status"),
-                created_at=simulation.get("created_at"),
-                turn_count=simulation.get("turn_count"),
-            )
-            for simulation in simulations
-        ]
+        # Format history so the frontend SidebarSetup can display it seamlessly
+        formatted_history = []
+        for sim in simulations:
+            personas = sim.get("personas") or []
+            turn_count = sim.get("turn_count", 0)
+
+            # Map created_at to human-friendly category
+            created_at = sim.get("created_at")
+            category = "Today"
+            if created_at:
+                diff_days = (datetime.now() - created_at).days if isinstance(created_at, datetime) else 0
+                if diff_days == 1:
+                    category = "Yesterday"
+                elif 2 <= diff_days <= 7:
+                    category = "6 days ago"
+                elif 8 <= diff_days <= 30:
+                    category = "Month ago"
+                elif diff_days > 30:
+                    category = "Long time ago"
+
+            formatted_history.append({
+                "id": sim["simulation_id"],
+                "title": sim["topic"],
+                "topic": sim["topic"],
+                "category": category,
+                "agentsCount": len(personas) if isinstance(personas, list) else 3,
+                "roundsCount": max(1, (turn_count // max(1, len(personas)))) if isinstance(personas, list) else turn_count,
+                "turn_count": turn_count,
+                "status": sim.get("status", "completed"),
+            })
 
         return success_response(
             message="Simulation history retrieved.",
-            data={"history": history},
+            data=formatted_history,
             status_code=200,
         )
 
     except Exception as e:
-        logger.exception(
-            "Failed to fetch simulation history"
-        )
-
+        logger.exception("Failed to fetch simulation history")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch history: {e}",
         )
 
 
-
-
+# ============================================================================
+# 3. DELETE SIMULATION
+# ============================================================================
 @simulation_router.delete("/simulations/{id}")
 def delete_simulation_by_id(id: str):
     simulation_controller = SimulationController()
@@ -84,18 +134,16 @@ def delete_simulation_by_id(id: str):
         )
 
     except Exception as e:
-        logger.exception(
-            f"Failed to delete simulation '{id}'"
-        )
-
+        logger.exception(f"Failed to delete simulation '{id}'")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete simulation: {e}",
         )
 
 
-
-
+# ============================================================================
+# 4. PERSONA GENERATION
+# ============================================================================
 @simulation_router.post("/personas/generate")
 def generate_personas(personas_request: GeneratePersonasRequest):
     simulation_controller = SimulationController()
@@ -108,32 +156,28 @@ def generate_personas(personas_request: GeneratePersonasRequest):
             default_memory_type=personas_request.default_memory_type,
         )
 
-    except Exception as e:
-        logger.exception(
-            f"Failed to generate personas for topic '{personas_request.topic}'"
+        return success_response(
+            message="Personas generated successfully.",
+            data=personas,
+            status_code=200,
         )
 
+    except Exception as e:
+        logger.exception(f"Failed to generate personas for topic '{personas_request.topic}'")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to generate personas: {e}",
         )
 
-    return success_response(
-        message="Personas generated successfully.",
-        data={"personas": personas},
-        status_code=200,
-    )
 
-
-
-
+# ============================================================================
+# 5. START SIMULATION
+# ============================================================================
 @simulation_router.post("/simulations/start")
 def start_simulation(start_request: StartSimulationRequest):
     simulation_controller = SimulationController()
 
     sim_topic = start_request.topic
-    # FIX: personas were pydantic model instances; create_simulation() does
-    # json.dumps(personas) directly, which fails on pydantic models.
     sim_personas = [p.model_dump() for p in start_request.personas]
     sim_memory_strategy = start_request.memory_strategy.model_dump()
     sim_visibility_matrix = start_request.visibility_matrix
@@ -146,121 +190,224 @@ def start_simulation(start_request: StartSimulationRequest):
             visibility_matrix=sim_visibility_matrix,
         )
 
-    except Exception as e:
-        logger.exception(
-            f"Failed to start simulation for topic '{start_request.topic}'"
+        return success_response(
+            message="Simulation started successfully.",
+            data={"simulation_id": simulation_id},
+            status_code=201,
         )
 
+    except Exception as e:
+        logger.exception(f"Failed to start simulation for topic '{start_request.topic}'")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to start simulation: {e}",
         )
 
-    return success_response(
-        message="Simulation started successfully.",
-        data={"simulation_id": simulation_id},
-        status_code=201,
-    )
 
-
-# FIX: path used JS template-literal syntax `${simulationId}` instead of a
-# real FastAPI path param `{simulationId}` — it would never match a request.
-# Also renamed the function (it shadowed the module-level `continue_simulation`
-# import and doesn't actually continue anything — next_turn() is preview-only,
-# it doesn't call the LLM or persist a turn; use /continue for that).
+# ============================================================================
+# 6. NEXT TURN (EXECUTE 1 STEP AND RETURN TURN DATA)
+# ============================================================================
 @simulation_router.post("/simulations/{simulationId}/next-turn")
-def preview_next_turn(simulationId: str):
+def execute_next_turn(simulationId: str):
+    """
+    Executes one turn in the deliberation engine and returns the resulting
+    DiscussionTurn formatted for the frontend stream.
+    """
     simulation_controller = SimulationController()
-    next_simulation = simulation_controller.next_turn(simulation_id=simulationId)
 
-    if not next_simulation:
+    simulation = simulation_controller.get_simulation_by_id(simulationId)
+    if not simulation:
         raise HTTPException(
             status_code=404,
-            detail=f"Simulation '{simulationId}' not found or no more turns available.",
+            detail=f"Simulation '{simulationId}' not found.",
         )
+
+    personas = simulation.get("personas") or []
+    total_rounds_limit = max(1, len(personas)) * 3
+
+    current_round = simulation_controller.get_last_round_number(simulationId)
+    if current_round >= total_rounds_limit:
+        # Reached natural debate conclusion
+        raise HTTPException(
+            status_code=404,
+            detail="Deliberation reached maximum rounds.",
+        )
+
+    try:
+        step_result = simulation_controller.continue_simulation(
+            simulation_id=simulationId,
+            steps=1,
+        )
+
+        opinion = step_result.get("last_opinion") or {}
+        stance_score = float(opinion.get("current_stance_score", 0.0))
+        shift_mag = float(opinion.get("shift_magnitude") or 0.0)
+
+        turn_payload = {
+            "id": f"turn_{uuid.uuid4().hex[:8]}",
+            "round_number": step_result.get("current_round", current_round + 1),
+            "agent_name": step_result.get("current_speaker", personas[0]["name"]),
+            "content": step_result.get("last_message", ""),
+            "tools_called": [],
+            "retrieved_sources": step_result.get("last_sources") or [],
+            "opinion_snapshot": {
+                "current_stance_score": stance_score,
+                "shift_magnitude": shift_mag,
+                "influencer": None,
+                "reasoning": opinion.get("reasoning", "Turn completed."),
+                "cfg": {
+                    "guidance_scale_gamma": abs(shift_mag) * 0.1,
+                    "shift_magnitude": shift_mag,
+                    "guidance_vector": stance_score,
+                    "dynamic": "Adaptive Evolution",
+                },
+            },
+            "timestamp": datetime.now().strftime("%H:%M"),
+        }
+
+        return success_response(
+            message="Turn executed successfully.",
+            data=turn_payload,
+            status_code=200,
+        )
+
+    except Exception as e:
+        logger.exception(f"Failed executing next turn for simulation '{simulationId}'")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to execute next turn: {e}",
+        )
+
+
+# ============================================================================
+# 7. SIMULATION ANALYTICS (SUPPORT BOTH GET & POST)
+# ============================================================================
+@simulation_router.get("/simulations/{simulation_id}/analytics")
+def get_simulation_analytics_get(simulation_id: str):
+    simulation_controller = SimulationController()
+
+    simulation = simulation_controller.get_simulation_by_id(simulation_id)
+    if not simulation:
+        raise HTTPException(status_code=404, detail=f"Simulation '{simulation_id}' not found.")
+
+    personas = simulation.get("personas") or []
+    history = simulation_controller.get_current_discussion_history(simulation_id)
+
+    # Build node positions and stances
+    nodes = []
+    for idx, p in enumerate(personas):
+        latest_turn = next((h for h in reversed(history) if h.get("agent_name") == p["name"]), None)
+        stance = 0.0
+        if latest_turn and latest_turn.get("opinion_snapshot"):
+            stance = float(latest_turn["opinion_snapshot"].get("current_stance_score", 0.0))
+
+        # Pythonic 2-digit zero padding (replaces JavaScript .padStart)
+        avatar_num = f"{(idx % 5) + 1:02d}"
+        nodes.append({
+            "id": f"agent-{idx}",
+            "name": p["name"],
+            "avatarUrl": f"/avatar/{avatar_num}.png",
+            "currentStance": stance,
+            "role": p.get("background", ""),
+        })
+
+    # Build edges and trajectory
+    edges = []
+    rounds_map: Dict[int, Dict[str, Any]] = {}
+    sources: set[str] = set()
+
+    for turn in history:
+        r = int(turn.get("round_number") or 1)
+        if r not in rounds_map:
+            rounds_map[r] = {"round": f"R{r}"}
+        opinion = turn.get("opinion_snapshot") or {}
+
+        # Guaranteed string key to satisfy Pylance
+        agent_name = str(turn.get("agent_name") or f"Agent_{r}")
+        rounds_map[r][agent_name] = opinion.get("current_stance_score", 0.0)
+
+        for src in turn.get("retrieved_sources") or []:
+            if src:
+                sources.add(str(src))
+
+    analytics_payload = {
+        "nodes": nodes,
+        "edges": edges,
+        "trajectory": list(rounds_map.values()),
+        "persuasion_signals": [],
+        "citations": list(sources),
+    }
+
     return success_response(
-        message="Next turn previewed successfully.",
-        data={"next_turn": next_simulation},
+        message="Analytics retrieved successfully.",
+        data=analytics_payload,
         status_code=200,
     )
 
 
-
 @simulation_router.post("/simulations/{simulation_id}/analytics")
-def get_simulation_analytics(
+def get_simulation_analytics_post(
     simulation_id: str,
     analytics_request: SimulationAnalyticsRequest,
 ):
     simulation_controller = SimulationController()
 
     try:
-        # FIX: current_turns/current_personas are lists of pydantic models
-        # (DiscussionTurn/Persona). simulation_analytics() calls dict-style
-        # `.get(...)` on each item, which pydantic BaseModel doesn't support.
         analytics = simulation_controller.simulation_analytics(
             simulation_id=simulation_id,
             current_turns=[t.model_dump() for t in analytics_request.current_turns],
             current_personas=[p.model_dump() for p in analytics_request.current_personas],
         )
-
-    except Exception as e:
-        logger.exception(
-            f"Failed to get analytics for simulation '{simulation_id}'"
+        return success_response(
+            message="Simulation analytics calculated successfully.",
+            data=analytics,
+            status_code=200,
         )
-
+    except Exception as e:
+        logger.exception(f"Failed to calculate analytics for simulation '{simulation_id}'")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get simulation analytics: {e}",
+            detail=f"Failed to calculate analytics: {e}",
         )
 
-    return success_response(
-        message="Simulation analytics retrieved successfully.",
-        data=analytics,
-        status_code=200,
-    )
 
-
-
-
+# ============================================================================
+# 8. ADVANCE / CONTINUE SIMULATION
+# ============================================================================
 @simulation_router.post("/simulations/{simulation_id}/continue")
 def continue_simulation_with_intervention(
     simulation_id: str,
     continue_request: ContinueSimulationRequest,
 ):
-  
     simulation_controller = SimulationController()
-
-    sim_intervention = continue_request.intervention
-    sim_steps = continue_request.steps
 
     try:
         result = simulation_controller.continue_simulation(
             simulation_id=simulation_id,
-            intervention=sim_intervention,
-            steps=sim_steps,
+            intervention=continue_request.intervention,
+            steps=continue_request.steps,
         )
-
+        return success_response(
+            message="Simulation continued successfully.",
+            data=result,
+            status_code=200,
+        )
     except Exception as e:
-        logger.exception(
-            f"Failed to continue simulation '{simulation_id}'"
-        )
-
+        logger.exception(f"Failed to continue simulation '{simulation_id}'")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to continue simulation: {e}",
         )
 
-    return success_response(
-        message="Simulation continued successfully.",
-        data=result,
-        status_code=200,
-    )
 
+# ============================================================================
+# 9. SEARCH / LIST ALL SIMULATIONS
+# ============================================================================
+@simulation_router.get("/simulations")
 def list_simulations(
     topic_regex: Optional[str] = Query(
         None,
-        description="Optional POSIX regex (case-insensitive) to filter simulations by topic, "
-                    "e.g. '^AI (Ethics|Regulation)' or 'deepfake'.",
+        description="Optional POSIX regex (case-insensitive) to filter simulations by topic.",
     ),
 ):
     simulation_controller = SimulationController()
@@ -293,6 +440,9 @@ def list_simulations(
     return success_response(message=message, data=data)
 
 
+# ============================================================================
+# 10. GET SINGLE SIMULATION
+# ============================================================================
 @simulation_router.get("/simulations/{simulation_id}")
 def get_simulation(simulation_id: str):
     simulation_controller = SimulationController()
@@ -303,12 +453,13 @@ def get_simulation(simulation_id: str):
     return success_response(message="Simulation retrieved.", data=simulation)
 
 
-
-
+# ============================================================================
+# 11. EVIDENCE SEARCH
+# ============================================================================
 @simulation_router.get("/evidence")
 def get_evidence(
-    query: Optional[str] = Query(None, description="Semantic search question, e.g. 'High-Risk AI obligations'"),
-    document_url: Optional[str] = Query(None, description="Exact document URL to inspect or restrict search to"),
+    query: Optional[str] = Query(None, description="Semantic search question"),
+    document_url: Optional[str] = Query(None, description="Exact document URL to inspect"),
     top_k: int = Query(3, ge=1, le=20, description="Number of chunks to retrieve"),
 ):
     if not query and not document_url:
@@ -321,14 +472,12 @@ def get_evidence(
         return fail_response(
             message=f"No Evidence retrieved: {e}",
             status_code=503,
-            error=str(e),
         )
     except Exception as e:
         logger.error(f"Evidence retrieval failed: {e}")
         return fail_response(
             message=f"Evidence retrieval failed: {e}",
             status_code=500,
-            error=str(e),
         )
 
     return success_response(

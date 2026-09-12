@@ -7,7 +7,7 @@ import uuid
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from backend.src.routes.schemas import simulation
+from src.routes.schemas import simulation
 from src.clients.postgres import PostgresClient
 from src.config import DATABASE_URL
 from src.utils.prompt_builder import render_prompt

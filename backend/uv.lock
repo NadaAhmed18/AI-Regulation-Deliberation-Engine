@@ -2,9 +2,9 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
+    "python_full_version >= '3.15'",
     "python_full_version >= '3.13' and python_full_version < '3.15'",
     "python_full_version < '3.13'",
-    "python_full_version >= '3.15'",
 ]
 
 [[package]]
@@ -235,6 +235,7 @@ dependencies = [
     { name = "langfuse" },
     { name = "langgraph" },
     { name = "neo4j" },
+    { name = "networkx" },
     { name = "openai" },
     { name = "psycopg2" },
     { name = "pyyaml" },
@@ -255,6 +256,7 @@ requires-dist = [
     { name = "langfuse", specifier = ">=4.15.1" },
     { name = "langgraph", specifier = ">=1.2.11" },
     { name = "neo4j", specifier = ">=6.2.0" },
+    { name = "networkx", specifier = ">=3.6.1" },
     { name = "openai", specifier = ">=3.3.1" },
     { name = "psycopg2", specifier = ">=2.9.12" },
     { name = "pyyaml", specifier = ">=6.0.3" },

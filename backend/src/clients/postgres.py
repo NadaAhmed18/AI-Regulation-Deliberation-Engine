@@ -74,6 +74,10 @@ class PostgresClient:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                cur.execute("""
+    ALTER TABLE simulations
+    ADD COLUMN IF NOT EXISTS visibility_matrix JSONB
+""")
             conn.commit()
 
     def create_simulation(self, sim_id: str, topic: str, memory_strategy: dict, personas: list):

@@ -210,18 +210,22 @@ class DiscussionEngine:
 
         # 3. Construct state and execute graph
         resume_state: DebateState = {
-            "simulation_id": sim_id,
-            "topic": topic,
-            "personas": personas,
-            "visibility_matrix": visibility_matrix or {},
-            "memory_strategy": memory_strat,
-            "max_rounds": target_round,
-            "current_round": current_round,
-            "current_speaker": "",
-            "last_message": "",
-            "last_sources": [],
-            "last_opinion": {}
-        }
+    "simulation_id": sim_id,
+    "topic": topic,
+    "personas": personas,
+    "visibility_matrix": (
+        visibility_matrix
+        if visibility_matrix is not None
+        else sim_data.get("visibility_matrix") or {}
+    ),
+    "memory_strategy": memory_strat,
+    "max_rounds": target_round,
+    "current_round": current_round,
+    "current_speaker": "",
+    "last_message": "",
+    "last_sources": [],
+    "last_opinion": {}
+}
 
         final_state: Dict[str, Any] = self.graph.invoke(resume_state)
         print(f"[Engine] ⏸️ Paused at Round {final_state['current_round']}.")
@@ -268,7 +272,8 @@ if __name__ == "__main__":
         sim_id=test_sim_id,
         topic=test_topic,
         memory_strategy={"type": "sliding_window", "window_size": 3},
-        personas=test_personas
+        personas=test_personas,
+        visibility_matrix=test_vis_matrix,
     )
     print(f"[+] Initialized simulation record: '{test_sim_id}' in PostgreSQL.")
 

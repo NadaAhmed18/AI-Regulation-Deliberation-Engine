@@ -74,16 +74,33 @@ class SimulationController:
     # =========================================================================
 
     def create_simulation(
-        self, sim_id: str, topic: str, memory_strategy: dict, personas: list
+        self,
+        sim_id: str,
+        topic: str,
+        memory_strategy: dict,
+        personas: list,
+        visibility_matrix: Optional[dict] = None,
     ) -> None:
         """Saves a new session when the user clicks 'Generate Simulation'."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO simulations (simulation_id, topic, memory_strategy, personas)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO simulations (
+                    simulation_id,
+                    topic,
+                    memory_strategy,
+                    personas,
+                    visibility_matrix
+                )
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (sim_id, topic, json.dumps(memory_strategy), json.dumps(personas)),
+                (
+                    sim_id,
+                    topic,
+                    json.dumps(memory_strategy),
+                    json.dumps(personas),
+                    json.dumps(visibility_matrix or {}),
+                ),
             )
 
     def save_discussion_turn(
@@ -177,9 +194,16 @@ class SimulationController:
         with self._get_cursor() as cur:
             cur.execute(
                 """
-                SELECT simulation_id, topic, status, memory_strategy, personas, created_at
-                FROM simulations
-                WHERE simulation_id = %s
+                SELECT
+    simulation_id,
+    topic,
+    status,
+    memory_strategy,
+    personas,
+    visibility_matrix,
+    created_at
+FROM simulations
+WHERE simulation_id = %s
                 """,
                 (sim_id,),
             )

@@ -56,22 +56,19 @@ class DiscussionEngine:
 
     @observe(as_type="generation", name="node_orchestrate")
     def node_orchestrate(self, state: DebateState) -> Dict[str, Any]:
-        temp_manager = ConversationContextManager(
-            simulation_id=state["simulation_id"],
-            topic=state["topic"],
-            strategy={"type": "sliding_window", "window_size": 3}
-        )
-        recent_history = temp_manager.build_context_for_agent(system_prompt="")
+        # Fetch actual discussion history from the database
+        history = self.repo.get_current_discussion_history(state["simulation_id"])
 
+        # Decide next speaker using token-weighted fair routing (< 1ms)
         next_speaker = self.orchestrator.decide_next_speaker(
             topic=state["topic"],
             personas=state["personas"],
-            messages=recent_history
+            history=history,
         )
 
         return {
             "current_speaker": next_speaker,
-            "current_round": state["current_round"] + 1
+            "current_round": state["current_round"] + 1,
         }
 
     @observe(as_type="generation", name="node_agent_turn")

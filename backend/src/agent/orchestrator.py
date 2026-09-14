@@ -1,56 +1,130 @@
-import json
-import re
+"""
+ORCHESTRATOR — Token-Weighted Fair Turn Routing
+
+Replaces costly, high-latency LLM routing with a sub-millisecond,
+token-inverse selection policy:
+1. Turn 1 (Opening): Starts completely randomly among all personas.
+2. Turns 2..N (Openings phase): Any agent with 0 tokens gets priority.
+3. Mid-Debate: Softmax/inverse-token weighting favors agents with lower
+   cumulative token consumption while excluding the immediate previous speaker.
+"""
+
+import random
 from typing import List, Dict, Any, Optional
 from langfuse import observe
-from src.clients.llm_client import LLMClient
-from src.utils.prompt_builder import render_prompt
-from src.agent.tools.tool_registry import get_tool_schemas_for_role
+
 
 class Orchestrator:
-    def __init__(self, provider: Optional[str] = None, model_name: Optional[str] = None):
-        # The moderator gets NO tools. It is strictly a router.
-        self.tools_schema = get_tool_schemas_for_role("moderator") 
-        self.llm = LLMClient(provider=provider, model_name=model_name, tools=self.tools_schema)
+    """Fast, deterministic-probabilistic debate moderator."""
 
-    @observe(as_type="generation", name="orchestrator_routing")
-    def decide_next_speaker(self, topic: str, personas: List[dict], messages: List[Dict[str, Any]]) -> str:
-        agent_names = [p["name"] for p in personas]
-        agent_summaries = "\n".join([f"- {p['name']} (Stance: {p['stance']})" for p in personas])
-        recent_history = "\n".join([f"{m['role']}: {m['content']}" for m in messages[-3:]])
+    def __init__(self, base_smoothing_tokens: int = 150):
+        # Base smoothing prevents highest-talking agents from dropping to 0% chance
+        self.base_smoothing_tokens = base_smoothing_tokens
 
-        prompt = render_prompt(
-            "orchestrator",
-            topic=topic,
-            agent_summaries=agent_summaries,
-            recent_history=recent_history
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Fast token approximation based on word count (~1.33 tokens per word)."""
+        if not text:
+            return 0
+        words = len(text.strip().split())
+        return max(1, int(words * 1.33))
+
+    def _calculate_cumulative_tokens(
+        self,
+        personas: List[Dict[str, Any]],
+        history: List[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        """Calculates total spoken tokens per persona across the simulation."""
+        token_counts: Dict[str, int] = {p["name"]: 0 for p in personas}
+
+        for row in history:
+            speaker = row.get("agent_name")
+            content = row.get("content", "")
+            if speaker in token_counts:
+                token_counts[speaker] += self._estimate_tokens(content)
+
+        return token_counts
+
+    @observe(name="orchestrator_routing")
+    def decide_next_speaker(
+        self,
+        topic: str,
+        personas: List[Dict[str, Any]],
+        history: Optional[List[Dict[str, Any]]] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """
+        Selects the next speaker in <1ms based on participation equality.
+        
+        Args:
+            topic: Debate topic (kept for interface consistency).
+            personas: List of debate persona dictionaries.
+            history: Ordered list of discussion_history DB rows.
+            messages: Optional fallback message list if raw DB rows aren't provided.
+        """
+        persona_names = [p["name"] for p in personas]
+        if not persona_names:
+            raise ValueError("No personas provided to orchestrator.")
+
+        if len(persona_names) == 1:
+            return persona_names[0]
+
+        # Normalize turns from either history rows or context messages
+        turns = history or []
+        if not turns and messages:
+            # Fallback parsing if caller only passed messages
+            for m in messages:
+                content = m.get("content", "")
+                if content.startswith("[") and "]:" in content:
+                    speaker = content[1 : content.index("]:")]
+                    turns.append({"agent_name": speaker, "content": content})
+
+        # =====================================================================
+        # TIER 1: First turn of the simulation -> Pick randomly
+        # =====================================================================
+        if not turns:
+            chosen = random.choice(persona_names)
+            print(f"[Orchestrator] 🎲 Opening turn: randomly selected '{chosen}'.")
+            return chosen
+
+        # Identify immediate previous speaker
+        last_speaker = turns[-1].get("agent_name")
+
+        # Exclude immediate speaker to prevent consecutive monologues
+        eligible_personas = [p for p in persona_names if p != last_speaker]
+        if not eligible_personas:
+            eligible_personas = persona_names
+
+        # Compute cumulative token consumption
+        tokens_by_agent = self._calculate_cumulative_tokens(personas, turns)
+
+        # =====================================================================
+        # TIER 2: Unheard agents get 100% priority (Opening statements phase)
+        # =====================================================================
+        unheard_agents = [name for name in eligible_personas if tokens_by_agent.get(name, 0) == 0]
+        if unheard_agents:
+            chosen = random.choice(unheard_agents)
+            print(f"[Orchestrator] 🎙️ Opening phase: selected unheard agent '{chosen}'.")
+            return chosen
+
+        # =====================================================================
+        # TIER 3: Inverse-Token Weighted Selection (Equalizing airtime)
+        # =====================================================================
+        candidate_tokens = [tokens_by_agent.get(name, 0) for name in eligible_personas]
+        max_tokens = max(candidate_tokens)
+
+        # Deficit weight: the fewer tokens an agent has spoken, the higher the weight
+        weights = [
+            (max_tokens - tokens_by_agent.get(name, 0)) + self.base_smoothing_tokens
+            for name in eligible_personas
+        ]
+
+        # Sample based on weights
+        chosen = random.choices(eligible_personas, weights=weights, k=1)[0]
+        
+        print(
+            f"[Orchestrator] ⚖️ Selected '{chosen}' "
+            f"(Tokens: {tokens_by_agent.get(chosen, 0)} | Airtime weights: "
+            f"{dict(zip(eligible_personas, weights))})"
         )
-
-        response = self.llm.generate_response(
-            [{"role": "user", "content": prompt}],
-            response_format="json_object"
-        )
-        content = response.get("content", "")
-
-        # Safe extraction
-        next_speaker = None
-        try:
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                candidate = data.get("next_speaker", "").strip()
-                if candidate in agent_names:
-                    next_speaker = candidate
-        except Exception:
-            pass
-
-        # Robust Fallback: If parsing fails or invalid name returned, pick first candidate that didn't just speak
-        if not next_speaker:
-            last_message_content = messages[-1]["content"] if messages else ""
-            for name in agent_names:
-                if name not in last_message_content:
-                    next_speaker = name
-                    break
-            if not next_speaker:
-                next_speaker = agent_names[0]
-
-        return next_speaker
+        return chosen

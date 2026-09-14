@@ -71,7 +71,7 @@ def unified_policy_research(
         try:
             tavily = _get_client()
             for wq in web_targets:
-                response = tavily.search(query=wq, search_depth="advanced", max_results=max_web_results_per_query)
+                response = tavily.search(query=wq, search_depth="ultra-fast", max_results=max_web_results_per_query)
                 results = response.get("results", [])
                 
                 if results:

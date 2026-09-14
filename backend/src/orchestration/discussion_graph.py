@@ -2,7 +2,7 @@ from typing import List, Dict, Any, TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from langfuse import observe
 
-from src.controllers.simulation_repository import SimulationRepository
+from backend.src.controllers.repository.simulation_repository import SimulationRepository
 from src.agent.memory.memory_manager import ConversationContextManager
 from src.agent.base_agent import BaseAgent
 from src.agent.orchestrator import Orchestrator

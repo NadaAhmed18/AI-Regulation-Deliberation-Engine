@@ -10,6 +10,10 @@ from src.config import DATABASE_URL
 
 
 class SimulationRepository:
+    """
+    Singleton repository managing database transactions for simulations and discussion history.
+    Provides thread-safe connection pooling and cursor execution.
+    """
     _instance: Optional["SimulationRepository"] = None
     _lock: threading.Lock = threading.Lock()
 
@@ -25,7 +29,7 @@ class SimulationRepository:
         if getattr(self, "_initialized", False):
             return
 
-        # Ensure base tables exist via PostgresClient
+        # Ensure database tables exist via PostgresClient DDL
         PostgresClient()
 
         self._conn: Optional[psycopg2.extensions.connection] = None
@@ -40,7 +44,7 @@ class SimulationRepository:
 
     @contextmanager
     def _get_cursor(self):
-        """Thread-safe context manager providing a cursor over the shared connection."""
+        """Thread-safe context manager providing an auto-committing cursor with rollback safety."""
         with self._lock:
             if self._conn is None or self._conn.closed:
                 self._connect()
@@ -65,6 +69,7 @@ class SimulationRepository:
         personas: list,
         visibility_matrix: Optional[Dict[str, List[str]]] = None,
     ) -> None:
+        """Inserts a new simulation configuration record into PostgreSQL."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -90,6 +95,7 @@ class SimulationRepository:
         opinion: Optional[dict] = None,
         sources: Optional[list] = None,
     ) -> None:
+        """Appends a completed agent turn with its opinion snapshot and cited sources."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -104,12 +110,13 @@ class SimulationRepository:
                     agent_name,
                     role,
                     content,
-                    json.dumps(opinion),
+                    json.dumps(opinion) if opinion is not None else None,
                     json.dumps(sources or []),
                 ),
             )
 
     def get_all_simulations(self) -> List[Dict[str, Any]]:
+        """Returns all simulations ordered by most recent, with turn counts."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -132,6 +139,7 @@ class SimulationRepository:
             return [dict(row) for row in rows]
 
     def search_simulations_by_regex(self, pattern: str) -> List[Dict[str, Any]]:
+        """Filters simulations by topic using case-insensitive PostgreSQL regex."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -156,6 +164,7 @@ class SimulationRepository:
             return [dict(row) for row in rows]
 
     def get_simulation_by_id(self, sim_id: str) -> Optional[Dict[str, Any]]:
+        """Fetches a specific simulation record by its ID."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -176,6 +185,7 @@ class SimulationRepository:
             return dict(row) if row else None
 
     def delete_simulation(self, sim_id: str) -> bool:
+        """Deletes a simulation. Cascades to history and analytics."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -187,6 +197,7 @@ class SimulationRepository:
             return cur.rowcount > 0
 
     def get_last_stance_score(self, sim_id: str, agent_name: str) -> Optional[float]:
+        """Fetches an agent's most recent stance score, or None if never scored."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -204,6 +215,7 @@ class SimulationRepository:
             return float(row["score"])
 
     def get_last_round_number(self, sim_id: str) -> int:
+        """Returns the highest round number reached in this simulation."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -219,6 +231,7 @@ class SimulationRepository:
             return 0
 
     def get_current_discussion_history(self, sim_id: str) -> List[Dict[str, Any]]:
+        """Returns full discussion turns chronologically."""
         with self._get_cursor() as cur:
             cur.execute(
                 """
@@ -233,6 +246,7 @@ class SimulationRepository:
             return [dict(row) for row in rows]
 
     def close(self) -> None:
+        """Closes the shared connection."""
         with self._lock:
             if self._conn is not None and not self._conn.closed:
                 self._conn.close()

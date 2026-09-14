@@ -1,19 +1,24 @@
 import json
-import threading
-from typing import Any, Dict, List, Optional, Iterator
-import uuid
 import re
+import threading
+import uuid
+from typing import Any, Dict, Iterator, List, Optional
 
-from src.clients.llm_client import LLMClient
-from src.config import PERSONA_MODEL
-from src.controllers.simulation_repository import SimulationRepository
-from src.orchestration.discussion_graph import DiscussionEngine
 from src.agent.base_agent import BaseAgent
 from src.agent.memory.memory_manager import ConversationContextManager
+from src.clients.llm_client import LLMClient
+from src.config import PERSONA_MODEL
+from src.controllers.analytics_controller import AnalyticsController
+from src.controllers.repository.simulation_repository import SimulationRepository
+from src.orchestration.discussion_graph import DiscussionEngine
 from src.utils.prompt_builder import render_prompt
 
 
 class SimulationController:
+    """
+    Singleton Controller managing simulation setup, agent generation, turn stepping,
+    and streaming execution. Automatically updates the analytics cache upon turn completion.
+    """
     _instance: Optional["SimulationController"] = None
     _lock: threading.Lock = threading.Lock()
 
@@ -30,6 +35,7 @@ class SimulationController:
             return
 
         self.repo = SimulationRepository()
+        self.analytics_controller = AnalyticsController()
         self.llm = LLMClient(model_name=PERSONA_MODEL)
         self.engine = DiscussionEngine()
         self._initialized = True
@@ -58,6 +64,10 @@ class SimulationController:
         sources: Optional[list] = None,
     ) -> None:
         self.repo.save_discussion_turn(sim_id, round_num, agent_name, role, content, opinion, sources)
+        try:
+            self.analytics_controller.compute_turn_analytics(sim_id)
+        except Exception as e:
+            print(f"[!] Warning: Analytics auto-update failed on turn save: {e}")
 
     def get_all_simulations(self) -> List[Dict[str, Any]]:
         return self.repo.get_all_simulations()
@@ -84,7 +94,7 @@ class SimulationController:
         self.repo.close()
 
     # -------------------------------------------------------------------------
-    # Persona Generation (Fast OpenRouter openai/gpt-oss-120b)
+    # Persona Generation (LLM-driven setup)
     # -------------------------------------------------------------------------
     def generate_personas(
         self,
@@ -152,7 +162,7 @@ class SimulationController:
                             break
 
             if not isinstance(personas, list) or len(personas) < 2:
-                # Fallback persona set
+                # Deterministic fallback persona set
                 personas = [
                     {
                         "name": "Dr. Elena Vance",
@@ -171,7 +181,7 @@ class SimulationController:
                         "background": "Senior Legal Counsel for Technology Governance.",
                         "stance": "Tiered, proportional compliance balancing innovation and risk.",
                         "tone": "Pragmatic, diplomatic, structured",
-                    }
+                    },
                 ][:num_agents]
 
             validated_personas: List[Dict[str, Any]] = []
@@ -216,88 +226,21 @@ class SimulationController:
         )
         return sim_id
 
-    def next_turn(self, simulation_id: str) -> Dict[str, Any]:
-        simulation = self.repo.get_simulation_by_id(simulation_id)
-        if not simulation:
-            raise ValueError(f"Simulation '{simulation_id}' not found.")
-
-        personas = simulation.get("personas") or []
-        if not personas:
-            raise ValueError(f"Simulation '{simulation_id}' has no personas.")
-
-        discussion_history = self.repo.get_current_discussion_history(simulation_id)
-        memory_strategy = simulation.get("memory_strategy") or {}
-        visibility_matrix = simulation.get("visibility_matrix") or {}
-
-        turn_number = len(discussion_history)
-        agent_index = turn_number % len(personas)
-        current_persona = personas[agent_index]
-        round_number = (turn_number // len(personas)) + 1
-
-        return {
-            "simulation_id": simulation_id,
-            "round_number": round_number,
-            "turn_number": turn_number + 1,
-            "agent": current_persona,
-            "memory_strategy": memory_strategy,
-            "visibility_matrix": visibility_matrix,
-            "discussion_history": discussion_history,
-            "status": "ready_for_generation",
-        }
-
-    # -------------------------------------------------------------------------
-    # Restored Simulation Analytics Method
-    # -------------------------------------------------------------------------
     def simulation_analytics(
         self,
         simulation_id: str,
         current_turns: List[Dict[str, Any]],
         current_personas: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Calculates quantitative overview metrics for turns & personas."""
-        total_turns = len(current_turns)
-        unique_agents = len({
-            turn.get("agent_name") or turn.get("agent")
-            for turn in current_turns
-            if turn.get("agent_name") or turn.get("agent")
-        })
-
-        agent_counts: Dict[str, int] = {}
-        for turn in current_turns:
-            agent_name = turn.get("agent_name") or turn.get("agent")
-            if agent_name:
-                agent_counts[agent_name] = agent_counts.get(agent_name, 0) + 1
-
-        most_active_agent: Optional[str] = None
-        most_active_agent_turns: int = 0
-
-        if agent_counts:
-            most_active_agent = max(agent_counts, key=lambda k: agent_counts[k])
-            most_active_agent_turns = agent_counts[most_active_agent]
-
-        stance_scores: List[float] = []
-        for turn in current_turns:
-            opinion = turn.get("opinion_snapshot") or {}
-            score = opinion.get("current_stance_score")
-            if score is not None:
-                try:
-                    stance_scores.append(float(score))
-                except (TypeError, ValueError):
-                    pass
-
-        avg_stance_score = (sum(stance_scores) / len(stance_scores)) if stance_scores else None
-
-        return {
-            "simulation_id": simulation_id,
-            "total_turns": total_turns,
-            "unique_agents": unique_agents,
-            "avg_stance_score": avg_stance_score,
-            "most_active_agent": most_active_agent,
-            "most_active_agent_turns": most_active_agent_turns,
-        }
+        """Delegates overview turn analytics calculation to AnalyticsController."""
+        return self.analytics_controller.calculate_turn_summary(
+            simulation_id=simulation_id,
+            current_turns=current_turns,
+            current_personas=current_personas,
+        )
 
     # -------------------------------------------------------------------------
-    # Execution: Continue Simulation & Real-time Turn Stream
+    # Execution: Synchronous Step and Real-time SSE Stream
     # -------------------------------------------------------------------------
     def continue_simulation(
         self,
@@ -319,6 +262,12 @@ class SimulationController:
             visibility_matrix=visibility_matrix,
         )
 
+        # Trigger background analytics recalculation after stepping
+        try:
+            self.analytics_controller.compute_turn_analytics(simulation_id)
+        except Exception as e:
+            print(f"[!] Warning: Analytics auto-update failed after continue_simulation: {e}")
+
         return {
             "simulation_id": simulation_id,
             "steps": steps,
@@ -330,7 +279,7 @@ class SimulationController:
         }
 
     def stream_discussion_turn(self, simulation_id: str) -> Iterator[Dict[str, Any]]:
-        """Yields real-time events during turn execution."""
+        """Yields real-time events during turn execution with token-weighted fair routing."""
         sim_data = self.repo.get_simulation_by_id(simulation_id)
         if not sim_data:
             yield {"type": "error", "message": f"Simulation '{simulation_id}' not found."}
@@ -345,9 +294,8 @@ class SimulationController:
         last_round = self.repo.get_last_round_number(simulation_id)
         current_round = last_round + 1
 
-        # 1. Orchestrate speaker
+        # 1. Orchestrate Next Speaker (Without extraneous 'topic' keyword)
         next_speaker = self.engine.orchestrator.decide_next_speaker(
-            topic=topic,
             personas=personas,
             history=history,
         )
@@ -360,7 +308,7 @@ class SimulationController:
             "avatarSeed": persona.get("avatarSeed", next_speaker),
         }
 
-        # 2. Build Context
+        # 2. Build Agent Context
         agent = BaseAgent(persona=persona, topic=topic)
         allowed_speakers = visibility_matrix.get(next_speaker, None)
         agent_memory = persona.get("memory_config") or memory_strategy
@@ -406,6 +354,12 @@ class SimulationController:
             opinion=opinion_snapshot,
             sources=cited_sources,
         )
+
+        # 6. Auto-update Analytics Cache
+        try:
+            self.analytics_controller.compute_turn_analytics(simulation_id)
+        except Exception as e:
+            print(f"[!] Warning: Analytics auto-update failed on stream turn complete: {e}")
 
         stance_score = float(opinion_snapshot.get("current_stance_score", 0.0))
         shift_mag = float(opinion_snapshot.get("shift_magnitude") or 0.0)

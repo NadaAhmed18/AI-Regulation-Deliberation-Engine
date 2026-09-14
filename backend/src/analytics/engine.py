@@ -1,186 +1,38 @@
-import json
 from typing import Any, Dict, List, Optional
 
-from src.analytics.agreement import compute_round_agreement
-from src.analytics.influence import compute_topology_influence
-from src.analytics.network_model import OpinionDynamicsNetwork
-from src.analytics.opinion_change import compute_opinion_trajectories
-from src.controllers.simulation_controller import SimulationController
-
+from src.analytics.metrics.agreement import compute_round_agreement
+from src.analytics.metrics.influence import compute_topology_influence
+from src.analytics.metrics.network_model import OpinionDynamicsNetwork
+from src.analytics.metrics.opinion_change import compute_opinion_trajectories
+from src.analytics.common import extract_citations, extract_persuasion_signals
 
 class DiscussionAnalyticsEngine:
     """
-    Coordinates analytics computation for a simulation.
-
-    It reads simulation/history data from PostgreSQL, computes all analytics,
-    and caches the result in the simulation_analytics table.
+    Pure in-memory analytics engine.
+    Orchestrates trajectory, agreement, influence, citations, and graph computations.
     """
 
-    def __init__(self):
-        self.controller = SimulationController()
-        self._ensure_analytics_table()
-
-    def _ensure_analytics_table(self) -> None:
-        """Create the analytics cache table if it does not already exist."""
-
-        with self.controller._get_cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS simulation_analytics (
-                    simulation_id VARCHAR(50) PRIMARY KEY
-                        REFERENCES simulations(simulation_id)
-                        ON DELETE CASCADE,
-
-                    opinion_change JSONB NOT NULL,
-                    agreement JSONB NOT NULL,
-                    influence JSONB NOT NULL,
-                    network_graph JSONB NOT NULL,
-
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-
-    def _fetch_history(
+    def compute_all_metrics(
         self,
-        simulation_id: str,
-    ) -> List[Dict[str, Any]]:
-        """Fetch discussion turns for one simulation in chronological order."""
-
-        with self.controller._get_cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    id,
-                    simulation_id,
-                    round_number,
-                    agent_name,
-                    role,
-                    content,
-                    opinion_snapshot,
-                    retrieved_sources,
-                    created_at
-                FROM discussion_history
-                WHERE simulation_id = %s
-                ORDER BY round_number ASC, id ASC
-                """,
-                (simulation_id,),
-            )
-
-            rows = cur.fetchall()
-
-        return [dict(row) for row in rows]
-
-    def _save_to_cache(
-        self,
-        simulation_id: str,
-        opinion_change: Dict[str, Any],
-        agreement: List[Dict[str, Any]],
-        influence: Dict[str, Any],
-        network_graph: Dict[str, Any],
-    ) -> None:
-        """Insert or update computed analytics."""
-
-        with self.controller._get_cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO simulation_analytics (
-                    simulation_id,
-                    opinion_change,
-                    agreement,
-                    influence,
-                    network_graph,
-                    updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-
-                ON CONFLICT (simulation_id)
-                DO UPDATE SET
-                    opinion_change = EXCLUDED.opinion_change,
-                    agreement = EXCLUDED.agreement,
-                    influence = EXCLUDED.influence,
-                    network_graph = EXCLUDED.network_graph,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    simulation_id,
-                    json.dumps(opinion_change),
-                    json.dumps(agreement),
-                    json.dumps(influence),
-                    json.dumps(network_graph),
-                ),
-            )
-
-    def get_cached_analytics(
-        self,
-        simulation_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Return cached analytics if available."""
-
-        with self.controller._get_cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    simulation_id,
-                    opinion_change,
-                    agreement,
-                    influence,
-                    network_graph,
-                    updated_at
-                FROM simulation_analytics
-                WHERE simulation_id = %s
-                """,
-                (simulation_id,),
-            )
-
-            row = cur.fetchone()
-
-        return dict(row) if row else None
-
-    def analyze(
-        self,
-        simulation_id: str,
-        force_compute: bool = False,
+        topic: str,
+        personas: List[Dict[str, Any]],
+        history: List[Dict[str, Any]],
+        visibility_matrix: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        """
-        Compute all analytics for a simulation.
-
-        Completed simulations may use their cached analytics unless
-        force_compute=True.
-        """
-
-        simulation = self.controller.get_simulation_by_id(simulation_id)
-
-        if not simulation:
-            raise ValueError(
-                f"Simulation ID '{simulation_id}' not found."
-            )
-
-        if (
-            simulation.get("status") == "completed"
-            and not force_compute
-        ):
-            cached = self.get_cached_analytics(simulation_id)
-
-            if cached:
-                return cached
-
-        personas = list(simulation.get("personas") or [])
-        visibility_matrix = simulation.get("visibility_matrix") or {}
-
-        history = self._fetch_history(simulation_id)
-
+        """Computes and bundles all metrics into the final frontend payload."""
         opinion_change = compute_opinion_trajectories(
-            history,
-            personas,
+            history_rows=history,
+            personas=personas,
         )
 
-        agreement = compute_round_agreement(history)
+        agreement = compute_round_agreement(
+            history_rows=history,
+        )
 
         influence = compute_topology_influence(
-            history,
-            personas,
-            visibility_matrix,
+            history_rows=history,
+            personas=personas,
+            visibility_matrix=visibility_matrix,
         )
 
         network = OpinionDynamicsNetwork(
@@ -188,22 +40,23 @@ class DiscussionAnalyticsEngine:
             opinion_trajectories=opinion_change,
             influence_data=influence,
         )
-
         network_graph = network.export_graph_data()
 
-        self._save_to_cache(
-            simulation_id=simulation_id,
-            opinion_change=opinion_change,
-            agreement=agreement,
-            influence=influence,
-            network_graph=network_graph,
-        )
+        # Format node visuals with avatars for UI
+        for idx, node in enumerate(network_graph.get("nodes", [])):
+            avatar_num = f"{(idx % 5) + 1:02d}"
+            node["avatarUrl"] = f"/avatar/{avatar_num}.png"
+            node["currentStance"] = node.get("stance", 0.0)
+
+        persuasion_signals = extract_persuasion_signals(history)
+        citations = extract_citations(history)
 
         return {
-            "simulation_id": simulation_id,
-            "topic": simulation.get("topic"),
+            "topic": topic,
             "opinion_change": opinion_change,
             "agreement": agreement,
             "influence": influence,
             "network_graph": network_graph,
+            "persuasion_signals": persuasion_signals,
+            "citations": citations,
         }

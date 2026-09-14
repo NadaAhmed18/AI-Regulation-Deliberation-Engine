@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from src.agent.tools.retriever import search_ai_policy
-from src.analytics.influence import compute_topology_influence
+from src.analytics.metrics.influence import compute_topology_influence
 from src.utils.response import success_response, fail_response
 from src.controllers.simulation_controller import SimulationController
 from src.routes.schemas.simulation import (

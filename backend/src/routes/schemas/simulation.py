@@ -39,6 +39,7 @@ class StartSimulationRequest(BaseModel):
         default_factory=MemoryConfig
     )
     visibility_matrix: Optional[Dict[str, List[str]]] = None
+    stream: bool = Field(default=False, description="If True, immediately streams initialization and Turn 1 via SSE")
 
 
 class StartSimulationResponse(BaseModel):
@@ -47,6 +48,7 @@ class StartSimulationResponse(BaseModel):
 
 class ContinueSimulationRequest(BaseModel):
     steps: int = Field(default=1, ge=1)
+    stream: bool = Field(default=False, description="If True, streams turn execution via SSE")
 
 
 class ContinueSimulationResponse(BaseModel):

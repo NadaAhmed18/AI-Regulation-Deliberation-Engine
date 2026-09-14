@@ -1,15 +1,9 @@
 import json
-import os
-import gc
-import re
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Iterator, List
 
-# Langfuse imports
 from langfuse.openai import OpenAI as LangfuseOpenAI # type: ignore
-from langfuse import observe, get_client
 
 from src.config import (
-    DEFAULT_PROVIDER,
     DEFAULT_MODEL,
     OPENROUTER_API_KEY,
     DEFAULT_REASONING_EFFORT,
@@ -18,73 +12,43 @@ from src.config import (
 
 
 class LLMClient:
+    """
+    Dedicated OpenRouter LLM Client with Langfuse observability.
+    Supports standard generation, structured JSON mode, tool calling, 
+    and real-time streaming with reasoning/thinking extraction.
+    """
+
     def __init__(
         self,
-        provider: Optional[str] = None,
         model_name: Optional[str] = None,
-        tools: Optional[list] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
         default_reasoning_effort: Optional[str] = DEFAULT_REASONING_EFFORT,
         default_max_tokens: int = DEFAULT_MAX_COMPLETION_TOKENS,
     ):
-        self.provider = (provider or DEFAULT_PROVIDER).lower()
+        if not OPENROUTER_API_KEY:
+            raise RuntimeError("Missing OPENROUTER_API_KEY in environment variables.")
+
         self.model_name = model_name or DEFAULT_MODEL
         self.tools = tools or []
-        
-        # Default thinking/reasoning parameters
         self.default_reasoning_effort = default_reasoning_effort
         self.default_max_tokens = default_max_tokens
 
-        self._client: Optional[LangfuseOpenAI] = None
-        self.hf_model: Any = None
-        self.hf_tokenizer: Any = None
-
-        if self.provider == "openrouter":
-            if not OPENROUTER_API_KEY:
-                raise RuntimeError("Missing OPENROUTER_API_KEY")
-
-            # Drop-in replacement: Langfuse automatically traces the OpenRouter API calls!
-            self._client = LangfuseOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
-            
-        elif self.provider == "huggingface":
-            print(f"[*] Initializing local HuggingFace model: {self.model_name}")
-            import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-            
-            self.hf_tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.hf_model = AutoModelForCausalLM.from_pretrained(
-                self.model_name, torch_dtype=dtype, device_map="auto" if self.device == "cuda" else None
-            )
+        # Direct drop-in: LangfuseOpenAI instruments OpenRouter calls automatically
+        self._client = LangfuseOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
 
     def generate_response(
         self,
-        messages: list,
+        messages: List[Dict[str, Any]],
         response_format: str = "text",
         max_tokens: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
-    ) -> dict:
-        """Routes the request. Supports per-call overrides for tokens & reasoning effort."""
-        if self.provider == "openrouter":
-            return self._generate_openrouter(
-                messages=messages,
-                response_format=response_format,
-                max_tokens=max_tokens,
-                reasoning_effort=reasoning_effort,
-            )
-        elif self.provider == "huggingface":
-            return self._generate_huggingface(messages, response_format)
-        raise ValueError(f"Unknown provider: {self.provider}")
-
-    # No decorator needed here; LangfuseOpenAI handles it automatically under the hood
-    def _generate_openrouter(
-        self,
-        messages: list,
-        response_format: str = "text",
-        max_tokens: Optional[int] = None,
-        reasoning_effort: Optional[str] = None,
-    ) -> dict:
+    ) -> Dict[str, Any]:
+        """
+        Synchronous non-streaming generation with tool call resolution.
+        """
         resolved_max_tokens = max_tokens or self.default_max_tokens
         resolved_effort = (
             reasoning_effort
@@ -98,7 +62,7 @@ class LLMClient:
             "max_tokens": resolved_max_tokens,
         }
 
-        # Send ONLY effort in reasoning (if specified and not "none")
+        # Apply reasoning effort if explicitly supported and configured
         if resolved_effort and str(resolved_effort).lower() != "none":
             kwargs["extra_body"] = {
                 "reasoning": {
@@ -112,16 +76,17 @@ class LLMClient:
         if response_format == "json_object":
             kwargs["response_format"] = {"type": "json_object"}
 
-        assert self._client is not None, "OpenRouter client is not initialized"
         completion = self._client.chat.completions.create(**kwargs)
         message = completion.choices[0].message
 
+        # Resolve autonomous tool call requests
         if message.tool_calls:
             tool_call = message.tool_calls[0]
             try:
                 args = json.loads(tool_call.function.arguments)
             except Exception:
-                args = {}
+                args = {"raw": tool_call.function.arguments}
+
             return {
                 "type": "tool_call",
                 "tool_name": tool_call.function.name,
@@ -129,93 +94,113 @@ class LLMClient:
                 "tool_call_id": tool_call.id,
             }
 
-        return {"type": "text", "content": message.content or ""}
+        return {
+            "type": "text",
+            "content": message.content or "",
+        }
 
-    # We manually trace HuggingFace using the @observe decorator
-    @observe(as_type="generation", name="hf_local_generation")
-    def _generate_huggingface(self, messages: list, response_format: str = "text") -> dict:
-        tokenizer, model = self.hf_tokenizer, self.hf_model
-        
-        # 1. ENFORCE JSON IN PROMPT: If JSON is requested, ensure the prompt explicitly demands it
-        active_messages = list(messages)
-        if response_format == "json_object":
-            # Append a system reminder to guarantee valid syntax
-            active_messages.append({
-                "role": "system", 
-                "content": "CRITICAL: You must output ONLY a valid JSON object or array. Do not include markdown formatting, backticks, or any conversational text."
-            })
-        
-        # Log input into Langfuse manually for HF
-        get_client().update_current_generation(input=active_messages, model=self.model_name)
-        
-        prompt = tokenizer.apply_chat_template(
-            active_messages, 
-            tools=self.tools or None, 
-            tokenize=False, 
-            add_generation_prompt=True
+    def generate_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        Streams events in real-time for frontend consumption:
+        - {"type": "thinking", "content": "..."}      -> Model reasoning / scratchpad
+        - {"type": "token", "content": "..."}         -> Standard text generation token
+        - {"type": "tool_call", "tool_name": "...",   -> Complete assembled tool call
+           "arguments": {...}, "tool_call_id": "..."}
+        - {"type": "done", "full_content": "..."}     -> Stream finished successfully
+        """
+        resolved_max_tokens = max_tokens or self.default_max_tokens
+        resolved_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else self.default_reasoning_effort
         )
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        outputs = model.generate(**inputs, max_new_tokens=1024, pad_token_id=tokenizer.eos_token_id)
-        
-        response_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True).strip()
-        
-        # 2. HANDLE JSON ENFORCEMENT POST-GENERATION
-        if response_format == "json_object":
-            # Strip markdown formatting like ```json ... ```
-            cleaned_text = re.sub(r'^```(?:json)?\s*', '', response_text, flags=re.MULTILINE)
-            cleaned_text = re.sub(r'\s*```$', '', cleaned_text, flags=re.MULTILINE).strip()
-            
-            # Extract only the outermost { ... } or [ ... ]
-            json_match = re.search(r'(\{.*\}|\[.*\])', cleaned_text, re.DOTALL)
-            if json_match:
-                cleaned_text = json_match.group(1)
 
-            # Validate by parsing and re-serializing
-            try:
-                parsed_json = json.loads(cleaned_text)
-                response_text = json.dumps(parsed_json)  # Guarantees 100% syntactically valid JSON string
-            except json.JSONDecodeError as e:
-                print(f"[!] Warning: HF model output invalid JSON: {e}. Raw text: {response_text}")
-                # Fallback to an empty json structure so callers don't crash
-                response_text = "{}"
+        kwargs: Dict[str, Any] = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": resolved_max_tokens,
+            "stream": True,
+        }
 
-        # Log final output into Langfuse
-        get_client().update_current_generation(output=response_text)
+        if resolved_effort and str(resolved_effort).lower() != "none":
+            kwargs["extra_body"] = {
+                "reasoning": {
+                    "effort": str(resolved_effort).lower()
+                }
+            }
 
-        # 3. Tool call parsing (same as before)
-        if self.tools and "{" in response_text and "}" in response_text and response_format != "json_object":
-            match = re.search(r'(\{.*?\})', response_text, re.DOTALL)
-            if match:
-                try:
-                    parsed = json.loads(match.group(1))
-                    if "name" in parsed and "arguments" in parsed:
-                        return {
-                            "type": "tool_call", 
-                            "tool_name": parsed["name"], 
-                            "arguments": parsed["arguments"], 
-                            "tool_call_id": "call_hf_" + os.urandom(4).hex()
+        if self.tools:
+            kwargs["tools"] = self.tools
+
+        response_stream = self._client.chat.completions.create(**kwargs)
+
+        full_content_chunks: List[str] = []
+        tool_call_accumulator: Dict[int, Dict[str, Any]] = {}
+
+        for chunk in response_stream:
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            # 1. Stream Thinking / Reasoning Content (OpenRouter / DeepSeek / OpenAI reasoning tokens)
+            reasoning_chunk = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            if reasoning_chunk:
+                yield {
+                    "type": "thinking",
+                    "content": reasoning_chunk,
+                }
+
+            # 2. Stream Standard Content Tokens
+            if delta.content:
+                full_content_chunks.append(delta.content)
+                yield {
+                    "type": "token",
+                    "content": delta.content,
+                }
+
+            # 3. Assemble Incremental Tool Call Chunks
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_call_accumulator:
+                        tool_call_accumulator[idx] = {
+                            "id": tc.id or f"call_{idx}",
+                            "name": (tc.function.name if tc.function and tc.function.name else ""),
+                            "arguments": (tc.function.arguments if tc.function and tc.function.arguments else ""),
                         }
+                    else:
+                        if tc.id:
+                            tool_call_accumulator[idx]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_call_accumulator[idx]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_call_accumulator[idx]["arguments"] += tc.function.arguments
+
+        # If any tool calls were requested, yield the assembled tool call
+        if tool_call_accumulator:
+            for _, tc_data in tool_call_accumulator.items():
+                try:
+                    args = json.loads(tc_data["arguments"])
                 except Exception:
-                    pass
+                    args = {"raw": tc_data["arguments"]}
 
-        return {"type": "text", "content": response_text}
+                yield {
+                    "type": "tool_call",
+                    "tool_name": tc_data["name"],
+                    "arguments": args,
+                    "tool_call_id": tc_data["id"],
+                }
+            return
 
-    def __del__(self):
-        """Cleanup function to delete the model and free VRAM/RAM when the agent is destroyed."""
-        if getattr(self, 'provider', None) == "huggingface":
-            # Delete model and tokenizer references
-            if getattr(self, 'hf_model', None) is not None:
-                del self.hf_model
-            if getattr(self, 'hf_tokenizer', None) is not None:
-                del self.hf_tokenizer
-            
-            # Force garbage collection and empty CUDA cache
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except ImportError:
-                pass
-                
-            gc.collect()
-            print("[*] HuggingFace model deleted and GPU memory freed.")
+        # Regular text completion finished
+        yield {
+            "type": "done",
+            "full_content": "".join(full_content_chunks),
+        }

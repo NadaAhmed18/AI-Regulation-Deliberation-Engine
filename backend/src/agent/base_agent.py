@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterator
 
 from langfuse import observe
 
@@ -18,7 +18,6 @@ class BaseAgent:
         self, 
         persona: dict,
         topic: str,
-        provider: Optional[str] = None, 
         model_name: Optional[str] = None
     ):
         self.persona = persona
@@ -27,13 +26,10 @@ class BaseAgent:
         self.background: str = persona["background"]
         self.stance: str = persona["stance"]
         self.tone: str = persona.get("tone", "Professional, analytical")
-
-        # Fetch tools allowed for a stakeholder (search_ai_policy, search_web, learn_and_ingest_url)
         self.tools_schema = get_tool_schemas_for_role("stakeholder")
         self.allowed_tool_names = [t["function"]["name"] for t in self.tools_schema]
 
         self.llm = LLMClient(
-            provider=provider,
             model_name=model_name,
             tools=self.tools_schema,
         )
@@ -48,6 +44,130 @@ class BaseAgent:
             persona_tone=self.tone,
         )
 
+    def run_react_loop_stream(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        user_prompt: Optional[str] = None,
+        max_steps: int = MAX_REACT_STEPS,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        Executes the ReAct loop and streams out live events:
+        - {"type": "thinking", "agent": name, "content": "..."}
+        - {"type": "token", "agent": name, "content": "..."}
+        - {"type": "tool_start", "agent": name, "tool_name": "...", "arguments": {...}}
+        - {"type": "tool_end", "agent": name, "tool_name": "...", "observation": "..."}
+        - {"type": "final", "agent": name, "content": "...", "sources": [...]}
+        """
+        active_messages: List[Dict[str, Any]] = (
+            list(messages) if messages is not None
+            else [{"role": "system", "content": self.system_prompt}]
+        )
+        if messages is None and user_prompt:
+            active_messages.append({"role": "user", "content": user_prompt})
+
+        discovered_urls: set[str] = set()
+        executed_calls = set()
+
+        for step in range(max_steps):
+            stream = self.llm.generate_stream(messages=active_messages)
+
+            tool_call_detected = None
+            text_accumulator: list[str] = []
+
+            for event in stream:
+                event_type = event.get("type")
+
+                if event_type == "thinking":
+                    yield {
+                        "type": "thinking",
+                        "agent": self.name,
+                        "content": event.get("content", ""),
+                    }
+
+                elif event_type == "token":
+                    chunk = event.get("content", "")
+                    text_accumulator.append(chunk)
+                    yield {
+                        "type": "token",
+                        "agent": self.name,
+                        "content": chunk,
+                    }
+
+                elif event_type == "tool_call":
+                    tool_call_detected = event
+
+            # If it was a standard text answer (no tool call requested), we are done!
+            if not tool_call_detected:
+                final_text = "".join(text_accumulator).strip()
+                yield {
+                    "type": "final",
+                    "agent": self.name,
+                    "content": final_text,
+                    "sources": list(discovered_urls),
+                }
+                return
+
+            # Tool call requested by agent
+            tool_name = str(tool_call_detected["tool_name"])
+            arguments = tool_call_detected.get("arguments", {})
+            tool_call_id = tool_call_detected.get("tool_call_id", f"call_{step}")
+
+            arguments_str = json.dumps(arguments, sort_keys=True) if isinstance(arguments, dict) else str(arguments)
+            call_signature = (tool_name, arguments_str)
+
+            yield {
+                "type": "tool_start",
+                "agent": self.name,
+                "tool_name": tool_name,
+                "arguments": arguments,
+            }
+
+            if call_signature in executed_calls:
+                observation = "Error: You have already executed this exact tool. Formulate your final response immediately."
+            else:
+                executed_calls.add(call_signature)
+                observation = execute_tool(tool_name, arguments, allowed_tools=self.allowed_tool_names)
+
+            # Extract cited URLs from observation
+            found_urls = re.findall(r'URL:\s*(https?://[^\s\n]+)', observation)
+            discovered_urls.update(found_urls)
+
+            yield {
+                "type": "tool_end",
+                "agent": self.name,
+                "tool_name": tool_name,
+                "observation": observation[:400] + "..." if len(observation) > 400 else observation,
+            }
+
+            assistant_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments_str,
+                    },
+                }],
+            }
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": observation,
+            }
+
+            active_messages.append(assistant_message)
+            active_messages.append(tool_message)
+
+        yield {
+            "type": "final",
+            "agent": self.name,
+            "content": f"The agent reached the maximum number of reasoning steps ({max_steps}).",
+            "sources": list(discovered_urls),
+        }
+
     @observe(as_type="generation", name="agent_react_loop")
     def run_react_loop(
         self, 
@@ -55,75 +175,13 @@ class BaseAgent:
         user_prompt: Optional[str] = None, 
         max_steps: int = MAX_REACT_STEPS
     ) -> Tuple[str, List[str]]:
-        """
-        Executes an autonomous ReAct loop where the agent decides which tools to call.
-        Can receive a full contextual message list (from ContextManager) OR a single user_prompt.
-        
-        Returns:
-            Tuple[str, List[str]]: (Final text response, List of discovered/cited URLs)
-        """
-        # Prepare the active messages list
-        if messages is not None:
-            active_messages: List[Dict[str, Any]] = list(messages)
-        else:
-            active_messages = [{"role": "system", "content": self.system_prompt}]
-            if user_prompt:
-                active_messages.append({"role": "user", "content": user_prompt})
+        """Synchronous ReAct loop for non-streaming calls."""
+        final_content = ""
+        sources: List[str] = []
 
-        discovered_urls: set[str] = set()
-        executed_calls = set()
+        for event in self.run_react_loop_stream(messages=messages, user_prompt=user_prompt, max_steps=max_steps):
+            if event.get("type") == "final":
+                final_content = event.get("content", "")
+                sources = event.get("sources", [])
 
-        for step in range(max_steps):
-            response = self.llm.generate_response(messages=active_messages)
-
-            # 1. Final answer delivered
-            if response["type"] == "text":
-                return str(response["content"]), list(discovered_urls)
-
-            # 2. Tool requested
-            if response["type"] == "tool_call":
-                tool_name = str(response["tool_name"])
-                arguments = response["arguments"]
-                tool_call_id = response.get("tool_call_id", f"call_{step}")
-                
-                arguments_str = json.dumps(arguments, sort_keys=True) if isinstance(arguments, dict) else str(arguments)
-                call_signature = (tool_name, arguments_str)
-
-                # Loop detection guard
-                if call_signature in executed_calls:
-                    print(f"[{self.name}] ⚠️ Loop detected: Attempted identical tool call '{tool_name}'. Halting loop.")
-                    observation = "Error: You have already executed this exact tool with these parameters. Formulate your final answer immediately without repeating calls."
-                else:
-                    executed_calls.add(call_signature)
-                    print(f"[{self.name}] 🛠️ Step {step + 1}: Calling tool '{tool_name}' with args: {arguments}")
-                    observation = execute_tool(tool_name, arguments, allowed_tools=self.allowed_tool_names)
-
-                # Track sources: Extract any URLs returned in tool output
-                found_urls = re.findall(r'URL:\s*(https?://[^\s\n]+)', observation)
-                discovered_urls.update(found_urls)
-
-                # Append assistant tool call and tool observation (OpenAI specification format)
-                assistant_message = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": arguments_str,
-                        },
-                    }],
-                }
-                
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": tool_name,
-                    "content": observation,
-                }
-
-                active_messages.append(assistant_message)
-                active_messages.append(tool_message)
-
-        return f"The agent reached the maximum number of reasoning steps ({max_steps}).", list(discovered_urls)
+        return final_content, sources

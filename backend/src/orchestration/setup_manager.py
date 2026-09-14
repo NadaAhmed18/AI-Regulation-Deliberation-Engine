@@ -88,36 +88,3 @@ class SetupManager:
             raise ValueError(f"Unsupported topology preset: {topology}")
 
         return matrix
-
-
-if __name__ == "__main__":
-    # Test runner: python -m src.orchestration.setup_manager
-    print("\n" + "=" * 60)
-    print(" smoke test: SetupManager ".center(60, "="))
-    print("=" * 60)
-
-    manager = SetupManager()
-    sample_topic = "Should training clusters >10^26 FLOPs face mandatory third-party audits?"
-
-    # 1. Generate personas with default memory
-    agents = manager.generate_personas(
-        topic=sample_topic,
-        num_agents=3,
-        custom_instructions="Include one hardware vendor, one open-source researcher, and one EU regulator.",
-        default_memory_type="sliding_window"
-    )
-
-    # 2. Customize individual memory strategies
-    agents[0]["memory_config"] = {"type": "summary"}
-    agents[1]["memory_config"] = {"type": "sliding_window", "window_size": 2}
-    agents[2]["memory_config"] = {"type": "full"}
-
-    # 3. Generate directed ring visibility matrix
-    vis_matrix = manager.build_visibility_matrix(agents, topology="ring")
-
-    print("\n[Generated Personas & Custom Memory Profiles]:")
-    print(json.dumps(agents, indent=2))
-
-    print("\n[Constructed Graph Visibility Matrix]:")
-    for listener, speakers in vis_matrix.items():
-        print(f"  - '{listener}' listens only to: {speakers}")

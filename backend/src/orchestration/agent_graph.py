@@ -1,91 +1,109 @@
-"""
-AGENT VISIBILITY & GRAPH TOPOLOGY
-
-Defines which agents are allowed to listen to each other.
-Acts as the communication graph for Week 3.
-"""
-
+from typing import Dict, List, Literal, Optional
 import networkx as nx
-from typing import List, Dict, Optional
+
+TopologyType = Literal["ring", "mesh", "custom"]
 
 
 class VisibilityGraph:
-    def __init__(self, agent_names: List[str], topology: str = "ring", custom_matrix: Optional[Dict[str, List[str]]] = None):
+    """Manages listening permissions and topological connectivity for debate agents."""
+
+    def __init__(
+        self,
+        agent_names: List[str],
+        topology: TopologyType = "ring",
+        custom_matrix: Optional[Dict[str, List[str]]] = None,
+    ):
         """
         Args:
-            agent_names: List of persona names in the debate.
-            topology: 'ring' (A->B->C->A), 'mesh' (all see all), or 'custom'.
-            custom_matrix: Dict where key = listener, value = list of agents they can hear.
-                           e.g., {"Agent A": ["Agent B"]} -> Agent A only hears Agent B (Agent C is hidden).
+            agent_names: Ordered list of agent names participating in the debate.
+            topology: Preset topology ('ring', 'mesh', or 'custom').
+            custom_matrix: Dict mapping {listener: [allowed_speakers_they_can_hear]}.
         """
-        self.agent_names = agent_names
-        self.graph = nx.DiGraph()
-        
-        if custom_matrix:
-            self.visibility_map = custom_matrix
-            self._build_from_custom_matrix()
+        # Deduplicate while preserving original order
+        self.agent_names: List[str] = list(dict.fromkeys(agent_names))
+        self.graph: nx.DiGraph = nx.DiGraph()
+        self.graph.add_nodes_from(self.agent_names)
+
+        if custom_matrix is not None:
+            self._build_from_custom_matrix(custom_matrix)
         else:
-            self.visibility_map = {}
             self._build_preset_topology(topology)
 
-    def _build_preset_topology(self, topology: str):
-        n = len(self.agent_names)
-        for name in self.agent_names:
-            self.graph.add_node(name)
+        self.visibility_map: Dict[str, List[str]] = self._sync_visibility_map()
 
-        if topology == "ring":
-            # Directed ring: Agent 0 listens to Agent n-1, Agent 1 listens to Agent 0, etc.
-            # Speaker -> Listener
+    def _build_preset_topology(self, topology: str) -> None:
+        """Constructs graph edges according to standard presets."""
+        topo = topology.lower()
+        n = len(self.agent_names)
+        if n <= 1:
+            return
+
+        if topo == "ring":
+            # Directed cycle: Speaker i speaks to Listener (i + 1)
             for i in range(n):
                 speaker = self.agent_names[i]
                 listener = self.agent_names[(i + 1) % n]
                 self.graph.add_edge(speaker, listener)
 
-        elif topology == "mesh":
-            # Everyone listens to everyone
+        elif topo == "mesh":
+            # Complete graph: Everyone hears everyone except themselves
             for u in self.agent_names:
                 for v in self.agent_names:
                     if u != v:
                         self.graph.add_edge(u, v)
+        else:
+            raise ValueError(
+                f"Unsupported topology '{topology}'. Expected 'ring', 'mesh', or pass 'custom_matrix'."
+            )
 
-        self._sync_visibility_map_from_graph()
-
-    def _build_from_custom_matrix(self):
-        for name in self.agent_names:
-            self.graph.add_node(name)
-
-        for listener, speakers in self.visibility_map.items():
+    def _build_from_custom_matrix(self, matrix: Dict[str, List[str]]) -> None:
+        """Constructs graph edges from an explicit visibility mapping."""
+        valid_agents = set(self.agent_names)
+        for listener, speakers in matrix.items():
+            if listener not in valid_agents:
+                continue
             for speaker in speakers:
-                # Directed edge: speaker -> listener
-                self.graph.add_edge(speaker, listener)
+                if speaker in valid_agents and speaker != listener:
+                    self.graph.add_edge(speaker, listener)
 
-    def _sync_visibility_map_from_graph(self):
-        """Updates the internal dictionary: {listener: [allowed_speakers]}"""
-        self.visibility_map = {
+    def _sync_visibility_map(self) -> Dict[str, List[str]]:
+        """Extracts {listener: [speakers]} from in-edges (predecessors)."""
+        return {
             agent: list(self.graph.predecessors(agent))
             for agent in self.agent_names
         }
 
-    def hide_speaker_from_listener(self, speaker: str, listener: str):
-        """Removes visibility: listener will no longer see speaker's messages."""
+    def allow_speaker_for_listener(self, speaker: str, listener: str) -> None:
+        """Grants listener visibility to hear speaker."""
+        if speaker in self.graph and listener in self.graph and speaker != listener:
+            self.graph.add_edge(speaker, listener)
+            self.visibility_map = self._sync_visibility_map()
+
+    def hide_speaker_from_listener(self, speaker: str, listener: str) -> None:
+        """Revokes listener's visibility to hear speaker."""
         if self.graph.has_edge(speaker, listener):
             self.graph.remove_edge(speaker, listener)
-            self._sync_visibility_map_from_graph()
+            self.visibility_map = self._sync_visibility_map()
 
-    def allow_speaker_for_listener(self, speaker: str, listener: str):
-        """Adds visibility: listener will see speaker's messages."""
-        self.graph.add_edge(speaker, listener)
-        self._sync_visibility_map_from_graph()
+    def get_allowed_speakers_for(self, listener: str) -> List[str]:
+        """Returns the list of speakers that 'listener' is allowed to hear."""
+        return self.visibility_map.get(listener, [])
 
     def is_strongly_connected(self) -> bool:
-        """
-        Acceptance Test check: Returns True if every agent can reach every other agent
-        directly or indirectly through the graph.
-        """
+        """Returns True if every agent can reach every other agent through the graph."""
         if len(self.agent_names) <= 1:
             return True
         return nx.is_strongly_connected(self.graph)
 
-    def get_allowed_speakers_for(self, listener: str) -> List[str]:
-        """Returns the list of agent names that 'listener' is allowed to hear."""
-        return self.visibility_map.get(listener, [])
+    def to_dict(self) -> Dict[str, List[str]]:
+        """Exports the visibility matrix in {listener: [speakers]} dictionary format."""
+        return self.visibility_map
+
+    @classmethod
+    def create_matrix(
+        cls,
+        agent_names: List[str],
+        topology: TopologyType = "ring",
+    ) -> Dict[str, List[str]]:
+        """Convenience factory method to generate visibility maps in a single line."""
+        return cls(agent_names=agent_names, topology=topology).to_dict()

@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional
 from src.utils.prompt_builder import render_prompt
 from src.clients.llm_client import LLMClient
-from backend.src.controllers.repository.simulation_repository import SimulationRepository
+from src.controllers.repository.simulation_repository import SimulationRepository
 
 
 class ConversationContextManager:

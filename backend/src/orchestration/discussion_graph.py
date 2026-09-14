@@ -243,7 +243,8 @@ if __name__ == "__main__":
         sim_id=test_sim_id,
         topic=test_topic,
         memory_strategy={"type": "sliding_window", "window_size": 3},
-        personas=test_personas
+        personas=test_personas,
+        visibility_matrix=test_vis_matrix,
     )
     print(f"[+] Initialized simulation record: '{test_sim_id}' in PostgreSQL.")
 

@@ -24,7 +24,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "openrouter").lower()  # "openrouter" or "huggingface"
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-
+DEFAULT_REASONING_EFFORT = os.getenv("DEFAULT_REASONING_EFFORT", "low")             # "low", "medium", "high", "none"
+DEFAULT_MAX_COMPLETION_TOKENS = int(os.getenv("DEFAULT_MAX_COMPLETION_TOKENS", 3000))
 
 # ==============================================================================
 # 3. EMBEDDING & VECTOR RETRIEVAL

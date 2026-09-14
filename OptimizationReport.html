@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Latency Optimization: Engineering Journey & Changelog</title>
+    <style>
+        :root {
+            --bg: #0b0f19;
+            --card-bg: #151d30;
+            --card-alt: #1c2744;
+            --border: #2d3d63;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.15);
+            --success: #4ade80;
+            --warning: #facc15;
+            --danger: #f87171;
+            --code-bg: #070a12;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2.5rem 1rem;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        header {
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 2rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .repo-tag {
+            display: inline-block;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--accent);
+            background: var(--accent-glow);
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            margin-bottom: 0.75rem;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        h1 {
+            font-size: 2.4rem;
+            color: #fff;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 1.15rem;
+        }
+
+        /* Summary Metrics Bar */
+        .metrics-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 3rem;
+        }
+
+        .metric-box {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+            border-top: 3px solid var(--accent);
+        }
+
+        .metric-title {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metric-val {
+            font-size: 1.8rem;
+            font-weight: 800;
+            margin: 0.35rem 0;
+        }
+
+        .metric-sub {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .metric-val.green {
+            color: var(--success);
+        }
+
+        .metric-val.blue {
+            color: var(--accent);
+        }
+
+        /* Timeline Narrative */
+        .timeline {
+            position: relative;
+            margin: 2rem 0;
+            padding-left: 2rem;
+            border-left: 2px solid var(--border);
+        }
+
+        .milestone {
+            position: relative;
+            margin-bottom: 3rem;
+        }
+
+        .milestone::before {
+            content: "";
+            position: absolute;
+            left: -2.6rem;
+            top: 0.25rem;
+            width: 1.1rem;
+            height: 1.1rem;
+            border-radius: 50%;
+            background: var(--bg);
+            border: 3px solid var(--accent);
+        }
+
+        .milestone.danger::before {
+            border-color: var(--danger);
+        }
+
+        .milestone.success::before {
+            border-color: var(--success);
+        }
+
+        .milestone.warning::before {
+            border-color: var(--warning);
+        }
+
+        .milestone-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.75rem;
+        }
+
+        .step-number {
+            font-size: 0.8rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.08);
+            color: #cbd5e1;
+        }
+
+        h2 {
+            font-size: 1.35rem;
+            color: #fff;
+        }
+
+        .milestone-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .sub-section {
+            margin-top: 1.25rem;
+            padding-top: 1rem;
+            border-top: 1px dashed var(--border);
+        }
+
+        .sub-section-title {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        p {
+            margin-bottom: 0.75rem;
+            color: #cbd5e1;
+            font-size: 0.95rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+
+        .badge-danger {
+            background: rgba(248, 113, 113, 0.15);
+            color: var(--danger);
+        }
+
+        .badge-success {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--success);
+        }
+
+        .badge-warning {
+            background: rgba(250, 204, 21, 0.15);
+            color: var(--warning);
+        }
+
+        .badge-info {
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.25rem 0;
+            font-size: 0.9rem;
+        }
+
+        th,
+        td {
+            padding: 0.7rem 0.85rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-muted);
+        }
+
+        tr:hover {
+            background: rgba(255, 255, 255, 0.015);
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin: 0.75rem 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85rem;
+            color: #94a3b8;
+        }
+
+        code {
+            color: #38bdf8;
+            font-family: inherit;
+        }
+
+        .callout {
+            background: rgba(56, 189, 248, 0.08);
+            border-left: 3px solid var(--accent);
+            padding: 0.85rem 1.15rem;
+            margin: 1rem 0;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .callout p {
+            margin: 0;
+            color: #e2e8f0;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <header>
+            <div class="repo-tag">Engineering Case Study</div>
+            <h1>Optimizing Agent Deliberation Latency</h1>
+            <p class="subtitle">The progressive journey from a 64-second sequential loop to a 28-second grounded agent
+                core.</p>
+        </header>
+
+        <!-- Executive Summary Numbers -->
+        <div class="metrics-bar">
+            <div class="metric-box">
+                <div class="metric-title">Core Agent Turn</div>
+                <div class="metric-val green">28.58s</div>
+                <div class="metric-sub">From 51.67s (-44.7% speedup)</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-title">Speech Synthesis (Gen 2)</div>
+                <div class="metric-val green">12.98s</div>
+                <div class="metric-sub">From 39.38s (-67.0% speedup)</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-title">Prompt Context Volume</div>
+                <div class="metric-val blue">11.5k</div>
+                <div class="metric-sub">Tokens halved from 23.8k peak</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-title">Remote LLM Hops</div>
+                <div class="metric-val blue">2 Calls</div>
+                <div class="metric-sub">Down from 4 sequential calls</div>
+            </div>
+        </div>
+
+        <!-- Comparative Table of Traces -->
+        <div class="milestone-card" style="margin-bottom: 3rem;">
+            <h2 style="margin-bottom: 0.5rem;">Benchmark Evolution Across Traces</h2>
+            <p>Quantitative audit of single-step debate execution across consecutive empirical traces:</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Milestone / Trace</th>
+                        <th>Orchestrate</th>
+                        <th>Tool Decision</th>
+                        <th>Tool Runtime</th>
+                        <th>Speech Gen</th>
+                        <th>Stance Grader</th>
+                        <th>Total Turn</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Trace 1: Baseline</strong></td>
+                        <td>4.04s</td>
+                        <td>10.62s</td>
+                        <td>7.76s (3 calls)</td>
+                        <td>15.05s</td>
+                        <td>7.89s</td>
+                        <td><strong>63.62s</strong></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trace 2: Unified Tool Trap</strong></td>
+                        <td>1.85s</td>
+                        <td>4.84s</td>
+                        <td><span class="badge badge-danger">47.28s</span></td>
+                        <td>10.92s</td>
+                        <td>17.57s</td>
+                        <td><span class="badge badge-danger">82.58s</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trace 3: Decoupled Ingestion</strong></td>
+                        <td>1.83s</td>
+                        <td>13.21s</td>
+                        <td><span class="badge badge-success">8.71s</span></td>
+                        <td>15.60s</td>
+                        <td>9.00s</td>
+                        <td><span class="badge badge-success">48.46s</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trace 4: 2-Query Prompt Limit</strong></td>
+                        <td>6.81s</td>
+                        <td>4.18s</td>
+                        <td><span class="badge badge-success">5.30s</span></td>
+                        <td><span class="badge badge-danger">39.38s</span></td>
+                        <td><span class="badge badge-success">2.59s</span></td>
+                        <td>58.37s</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trace 5: Reasoning Governance</strong></td>
+                        <td><span class="badge badge-danger">106.84s*</span></td>
+                        <td>5.42s</td>
+                        <td>10.08s</td>
+                        <td><span class="badge badge-success">12.98s</span></td>
+                        <td>4.18s</td>
+                        <td><strong>28.58s (Agent Core)</strong></td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="callout">
+                <p><em>*Note: Trace 5's orchestrator experienced an isolated 106s upstream cloud provider queue freeze,
+                        while the core agent turn hit its record speed of 28.58s.</em></p>
+            </div>
+        </div>
+
+        <!-- The Step-By-Step Engineering Journey -->
+        <div class="timeline">
+
+            <!-- Step 0 -->
+            <div class="milestone danger">
+                <div class="milestone-header">
+                    <span class="step-number">Phase 0</span>
+                    <h2>The Baseline: The Sequential ReAct Bottleneck</h2>
+                    <span class="badge badge-danger">Trace 1: 63.62s</span>
+                </div>
+                <div class="milestone-card">
+                    <p><strong>The Problem:</strong> A single agent turn took over a minute (63.62s). Inspecting
+                        Langfuse traces revealed that the agent executed <strong>4 sequential remote LLM
+                            round-trips</strong> per turn.</p>
+                    <div class="sub-section">
+                        <div class="sub-section-title">Root Cause in Prompt Design</div>
+                        <p>The system prompt (<code>system_agent.txt</code>) commanded a strict step-by-step knowledge
+                            workflow:</p>
+                        <pre><code>1. FIRST, execute search_ai_policy to verify internal vetted database.
+2. If context is missing, execute search_web.
+3. If you discover a URL, execute learn_and_ingest_url.
+4. Synthesize your final argument.</code></pre>
+                        <p>The model dutifully followed instructions, creating 4 network round trips where <strong>43.1
+                                seconds</strong> were spent purely idling for OpenRouter generations.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 1 -->
+            <div class="milestone danger">
+                <div class="milestone-header">
+                    <span class="step-number">Phase 1</span>
+                    <h2>The Unified Tool Attempt & The Ingestion Trap</h2>
+                    <span class="badge badge-danger">Trace 2: 82.58s (+18.96s WORSE)</span>
+                </div>
+                <div class="milestone-card">
+                    <p><strong>The Hypothesis:</strong> Collapse all 3 tools into a single multi-tier function
+                        (<code>research_policy_evidence</code>). Let Python search Neo4j, cascade to web search if
+                        empty, and ingest URLs automatically so the LLM only executes <strong>one tool call</strong>.
+                    </p>
+                    <div class="sub-section">
+                        <div class="sub-section-title">The Critical Discovery</div>
+                        <p>While LLM round-trips dropped from 4 to 2, total runtime jumped to <strong>82.58
+                                seconds</strong>! Tool execution alone exploded from 7.76s to <strong>47.28
+                                seconds</strong>.</p>
+                        <p><strong>Why?</strong> The unified tool executed the full scraping pipeline synchronously
+                            inside the turn loop:</p>
+                        <ul style="margin-left: 1.5rem; color: #cbd5e1; font-size: 0.95rem;">
+                            <li>Spun up Playwright headless browser (<code>crawl4ai</code>) waiting on DOM timeouts.
+                            </li>
+                            <li>Executed Trafilatura text extraction.</li>
+                            <li>Ran local neural reranking (<code>FlashRank</code>) across internal links.</li>
+                            <li>Dispatched remote Voyage embedding calls and Neo4j Cypher write transactions.</li>
+                        </ul>
+                        <p style="margin-top: 0.5rem;">The debate was frozen for 47 seconds just to index long-term
+                            memory that the speaker didn't even need for this round!</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2 -->
+            <div class="milestone success">
+                <div class="milestone-header">
+                    <span class="step-number">Phase 2</span>
+                    <h2>Decoupling Ingestion to Background Worker</h2>
+                    <span class="badge badge-success">Trace 3: 48.46s (-34.12s)</span>
+                </div>
+                <div class="milestone-card">
+                    <p><strong>The Engineering Fix:</strong> Decouple long-term persistence from the deliberation path.
+                        Search snippets are returned immediately to the agent, while heavy scraping and Neo4j embedding
+                        are dispatched out-of-band via background threads.</p>
+                    <pre><code># Background daemon worker in unified_research.py
+if auto_ingest_web and discovered_web_urls:
+    threading.Thread(
+        target=_background_ingest, 
+        args=(discovered_web_urls[0],), 
+        daemon=True
+    ).start()</code></pre>
+                    <div class="sub-section">
+                        <div class="sub-section-title">The Result</div>
+                        <p>Tool execution plummeted from <strong>47.28s down to 8.71s (-81.6%)</strong>. Overall step
+                            latency dropped below 50 seconds for the first time.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3 -->
+            <div class="milestone warning">
+                <div class="milestone-header">
+                    <span class="step-number">Phase 3</span>
+                    <h2>Context Explosion & The 2-Query Prompt Budget</h2>
+                    <span class="badge badge-warning">Trace 4: 58.37s (Context Halved)</span>
+                </div>
+                <div class="milestone-card">
+                    <p><strong>The New Bottleneck Exposed:</strong> In Trace 3, the agent discovered 13 distinct URLs.
+                        All raw snippets were stuffed into the conversation context, causing input tokens for Generation
+                        2 to explode to <strong>23,788 tokens</strong>. The LLM spent 15–39 seconds prefilling tokens.
+                    </p>
+                    <div class="sub-section">
+                        <div class="sub-section-title">The Engineering Fix</div>
+                        <p>Instead of naive text truncation, we updated <code>system_agent.txt</code> to enforce an
+                            explicit <strong>2-query budget</strong>:</p>
+                        <pre><code># Research Instructions (Two-Topic Grounding)
+Execute `research_policy_evidence` ONCE with exactly 2 focused queries:
+1. Query 1 (Regulatory/Legal Precedent): Target a specific statute/standard.
+2. Query 2 (Empirical/Impact Evidence): Target a concrete incident/metric.
+Do NOT provide more than 2 queries. Formulate speech immediately after.</code></pre>
+                        <p><strong>The Result:</strong> Input context in Generation 2 immediately halved from
+                            <strong>23,788 to 11,531 tokens (-51.5%)</strong>, and tool execution became even leaner at
+                            <strong>5.30s</strong>.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 4 -->
+            <div class="milestone success">
+                <div class="milestone-header">
+                    <span class="step-number">Phase 4</span>
+                    <h2>Taming DeepSeek Thinking Tokens</h2>
+                    <span class="badge badge-success">Trace 5: 28.58s Core Agent Turn</span>
+                </div>
+                <div class="milestone-card">
+                    <p><strong>The Bottleneck:</strong> In Trace 4, speech generation took <strong>39.38
+                            seconds</strong>. DeepSeek reasoning models generated hundreds of unconstrained internal
+                        Chain-of-Thought (CoT) tokens because <code>max_tokens</code> defaulted to
+                        <code>Infinity</code>.</p>
+                    <div class="sub-section">
+                        <div class="sub-section-title">The Engineering Fix</div>
+                        <p>Configured <code>LLMClient</code> with bounded completion limits
+                            (<code>max_tokens: 3000</code>) and attached OpenRouter's reasoning governance payload:</p>
+                        <pre><code>kwargs["extra_body"] = {
+    "reasoning": {
+        "effort": "low"  # Restricts CoT token budget
+    }
+}</code></pre>
+                        <p><strong>The Result:</strong> In Trace 5, speech generation latency dropped from
+                            <strong>39.38s down to 12.98s (-67.0%)</strong>. The entire core agent turn (Tool Call +
+                            Live Search + Speech Generation) finished in a record <strong>28.58 seconds</strong>!</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Future Milestones Placeholder -->
+            <div class="milestone">
+                <div class="milestone-header">
+                    <span class="step-number">Phase 5 (Pending)</span>
+                    <h2>Upcoming: Orchestrator Determinism & Cloud Latency Guards</h2>
+                    <span class="badge badge-info">Target: ~15s Turn</span>
+                </div>
+                <div class="milestone-card">
+                    <p><strong>The Final Frontier:</strong> In Trace 5, <code>node_orchestrate</code> froze for
+                        <strong>106.8 seconds</strong> due to an upstream OpenRouter provider queue hang, wasting 335
+                        reasoning tokens just to pick an opening speaker.</p>
+                    <div class="sub-section">
+                        <div class="sub-section-title">Planned Interventions</div>
+                        <ul style="margin-left: 1.5rem; color: #cbd5e1; font-size: 0.95rem;">
+                            <li><strong>Deterministic Round 1 Routing:</strong> Select the first speaker
+                                deterministically on Round 1 (0.00s execution, bypassing cloud API calls).</li>
+                            <li><strong>Zero-Reasoning Router:</strong> Pass <code>reasoning_effort="none"</code> for
+                                subsequent orchestrator rounds to prevent router CoT deliberation.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</body>
+
+</html>

@@ -11,26 +11,21 @@ from langfuse import observe
 
 # 1. Correct schema imports from schemas.py
 from src.agent.tools.schemas import (
-    RETRIEVER_TOOL_SCHEMA,
-    WEB_SEARCH_TOOL_SCHEMA,
-    WEB_LEARNER_TOOL_SCHEMA,
     ALL_TOOL_SCHEMAS,
 )
 
 # 2. Function implementations
-from src.agent.tools.retriever import search_ai_policy
-from src.agent.tools.web_search import search_web, learn_and_ingest_url
+from src.agent.tools.schemas import ALL_TOOL_SCHEMAS
+from src.agent.tools.unified_research import unified_policy_research
 
 # Map of tool names to their actual callable Python functions
 TOOLS_MAP = {
-    "search_ai_policy": search_ai_policy,
-    "search_web": search_web,
-    "learn_and_ingest_url": learn_and_ingest_url,
+    "research_policy_evidence": unified_policy_research,
 }
 
 # Role permissions: Stakeholders can search RAG, search Web, and save Web to RAG
 ROLE_TOOL_PERMISSIONS: Dict[str, List[str]] = {
-    "stakeholder": ["search_ai_policy", "search_web", "learn_and_ingest_url"],
+    "stakeholder": ["research_policy_evidence"],
     "moderator": [],
 }
 

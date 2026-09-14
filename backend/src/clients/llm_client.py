@@ -2,20 +2,38 @@ import json
 import os
 import gc
 import re
-from typing import Optional, Any
+from typing import Dict, Optional, Any
 
 # Langfuse imports
 from langfuse.openai import OpenAI as LangfuseOpenAI # type: ignore
 from langfuse import observe, get_client
 
-from src.config import DEFAULT_PROVIDER, DEFAULT_MODEL,OPENROUTER_API_KEY
+from src.config import (
+    DEFAULT_PROVIDER,
+    DEFAULT_MODEL,
+    OPENROUTER_API_KEY,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_MAX_COMPLETION_TOKENS,
+)
+
 
 class LLMClient:
-    def __init__(self, provider: Optional[str] = None, model_name: Optional[str] = None, tools: Optional[list] = None):
+    def __init__(
+        self,
+        provider: Optional[str] = None,
+        model_name: Optional[str] = None,
+        tools: Optional[list] = None,
+        default_reasoning_effort: Optional[str] = DEFAULT_REASONING_EFFORT,
+        default_max_tokens: int = DEFAULT_MAX_COMPLETION_TOKENS,
+    ):
         self.provider = (provider or DEFAULT_PROVIDER).lower()
         self.model_name = model_name or DEFAULT_MODEL
         self.tools = tools or []
         
+        # Default thinking/reasoning parameters
+        self.default_reasoning_effort = default_reasoning_effort
+        self.default_max_tokens = default_max_tokens
+
         self._client: Optional[LangfuseOpenAI] = None
         self.hf_model: Any = None
         self.hf_tokenizer: Any = None
@@ -40,23 +58,59 @@ class LLMClient:
                 self.model_name, torch_dtype=dtype, device_map="auto" if self.device == "cuda" else None
             )
 
-    def generate_response(self, messages: list, response_format: str = "text") -> dict:
-        """Routes the request. This is the entry point for the LLM."""
+    def generate_response(
+        self,
+        messages: list,
+        response_format: str = "text",
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> dict:
+        """Routes the request. Supports per-call overrides for tokens & reasoning effort."""
         if self.provider == "openrouter":
-            return self._generate_openrouter(messages, response_format)
+            return self._generate_openrouter(
+                messages=messages,
+                response_format=response_format,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
         elif self.provider == "huggingface":
             return self._generate_huggingface(messages, response_format)
         raise ValueError(f"Unknown provider: {self.provider}")
 
     # No decorator needed here; LangfuseOpenAI handles it automatically under the hood
-    def _generate_openrouter(self, messages: list, response_format: str) -> dict:
-        kwargs: dict[str, Any] = {"model": self.model_name, "messages": messages}
+    def _generate_openrouter(
+        self,
+        messages: list,
+        response_format: str = "text",
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> dict:
+        resolved_max_tokens = max_tokens or self.default_max_tokens
+        resolved_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else self.default_reasoning_effort
+        )
+
+        kwargs: Dict[str, Any] = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": resolved_max_tokens,
+        }
+
+        # Send ONLY effort in reasoning (if specified and not "none")
+        if resolved_effort and str(resolved_effort).lower() != "none":
+            kwargs["extra_body"] = {
+                "reasoning": {
+                    "effort": str(resolved_effort).lower()
+                }
+            }
+
         if self.tools:
             kwargs["tools"] = self.tools
-            
+
         if response_format == "json_object":
             kwargs["response_format"] = {"type": "json_object"}
-
 
         assert self._client is not None, "OpenRouter client is not initialized"
         completion = self._client.chat.completions.create(**kwargs)
@@ -68,7 +122,12 @@ class LLMClient:
                 args = json.loads(tool_call.function.arguments)
             except Exception:
                 args = {}
-            return {"type": "tool_call", "tool_name": tool_call.function.name, "arguments": args, "tool_call_id": tool_call.id}
+            return {
+                "type": "tool_call",
+                "tool_name": tool_call.function.name,
+                "arguments": args,
+                "tool_call_id": tool_call.id,
+            }
 
         return {"type": "text", "content": message.content or ""}
 

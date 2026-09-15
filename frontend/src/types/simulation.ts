@@ -8,15 +8,15 @@ export interface Persona {
     background: string;
     stance: string;
     tone: string;
-    avatarSeed: string; // Used for unique deterministic avatars
+    avatarSeed: string;
     memory_config?: PersonaMemoryConfig;
 }
 
 export interface CFGMetrics {
     guidance_scale_gamma: number;
     shift_magnitude: number;
-    guidance_vector: number;
-    dynamic: string; // e.g. "Persuaded (28.6%)", "Polarized (Backfire)"
+    guidance_vector?: number;
+    dynamic: string;
 }
 
 export interface OpinionSnapshot {
@@ -32,18 +32,21 @@ export interface DiscussionTurn {
     round_number: number;
     agent_name: string;
     content: string;
-    tools_called?: Array<{ name: string; query?: string }>;
+    tools_called?: Array<{ name: string; query?: string; result_preview?: string }>;
     retrieved_sources?: string[];
     opinion_snapshot: OpinionSnapshot;
-    timestamp: string;
+    timestamp?: string;
 }
 
 export interface DebateHistoryItem {
     id: string;
     title: string;
-    category: "Today" | "Yesterday" | "6 days ago" | "Month ago" | "Long time ago";
+    topic?: string;
+    category: "Today" | "Yesterday" | "6 days ago" | "Month ago" | "Long time ago" | string;
     agentsCount: number;
     roundsCount: number;
+    turn_count?: number;
+    status?: string;
 }
 
 export interface GraphNodeData {
@@ -62,10 +65,25 @@ export interface GraphEdgeData {
     round?: number;
 }
 
+export interface RoundAgreement {
+    round: number;
+    agreement_score: number;
+    classification: "High Consensus" | "Moderate Alignment" | "Significant Polarization" | "Extreme Polarization" | string;
+}
+
+export interface TopologyInfluence {
+    status: string;
+    matrix: Record<string, Record<string, number>>;
+    scores: Record<string, number>;
+    top_influencer: string | null;
+}
+
 export interface SimulationAnalytics {
     nodes: GraphNodeData[];
     edges: GraphEdgeData[];
     trajectory: Array<Record<string, number | string>>;
+    agreement?: RoundAgreement[];
+    influence?: TopologyInfluence;
     persuasion_signals: Array<{
         id: string;
         source: string;
@@ -73,8 +91,11 @@ export interface SimulationAnalytics {
         shift: number;
         gamma: number;
         dynamic: string;
+        reasoning?: string;
     }>;
     citations: string[];
+    is_replay?: boolean;
+    current_round?: number | null;
 }
 
 export interface PredefinedTopic {
@@ -82,4 +103,31 @@ export interface PredefinedTopic {
     title: string;
     tag: string;
     description: string;
+}
+
+export interface SimulationDetail {
+    simulation_id: string;
+    topic: string;
+    status: string;
+    memory_strategy: PersonaMemoryConfig;
+    personas: Persona[];
+    visibility_matrix?: Record<string, string[]>;
+    created_at?: string;
+    turns: DiscussionTurn[];
+    analytics: SimulationAnalytics;
+}
+
+// Live Streaming SSE Event Types
+export interface LiveStreamState {
+    speaker: string;
+    round: number;
+    avatarSeed?: string;
+    thinking: string;
+    tokens: string;
+    toolCall?: {
+        name: string;
+        arguments?: unknown;
+        observation?: string;
+        status: "running" | "done";
+    };
 }

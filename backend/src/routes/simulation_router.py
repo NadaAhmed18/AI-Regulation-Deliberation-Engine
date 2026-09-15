@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -11,7 +11,6 @@ from src.controllers.analytics_controller import AnalyticsController
 from src.controllers.simulation_controller import SimulationController
 from src.routes.dependencies import get_analytics_controller, get_simulation_controller
 from src.routes.schemas.simulation import (
-    ContinueSimulationRequest,
     GeneratePersonasRequest,
     StartSimulationRequest,
 )
@@ -196,10 +195,56 @@ def get_simulation_history(
 def get_simulation(
     simulation_id: str,
     sim_ctrl: SimulationController = Depends(get_simulation_controller),
+    analytics_ctrl: AnalyticsController = Depends(get_analytics_controller),
 ):
+    """Single unified endpoint: retrieves metadata, all debate turns, and analytics together."""
     sim = sim_ctrl.repo.get_simulation_by_id(simulation_id)
     if not sim:
         raise HTTPException(status_code=404, detail=f"Simulation '{simulation_id}' not found.")
+
+    if "created_at" in sim and isinstance(sim["created_at"], datetime):
+        sim["created_at"] = sim["created_at"].isoformat()
+
+    # 1. Fetch & sanitize all discussion turns
+    raw_history = sim_ctrl.repo.get_discussion_history(simulation_id)
+    turns = []
+    for row in raw_history:
+        turn = dict(row)
+        if "id" in turn:
+            turn["id"] = str(turn["id"])
+        if "created_at" in turn and isinstance(turn["created_at"], datetime):
+            turn["created_at"] = turn["created_at"].isoformat()
+        if isinstance(turn.get("opinion_snapshot"), str):
+            try:
+                turn["opinion_snapshot"] = json.loads(turn["opinion_snapshot"])
+            except Exception:
+                pass
+        if isinstance(turn.get("retrieved_sources"), str):
+            try:
+                turn["retrieved_sources"] = json.loads(turn["retrieved_sources"])
+            except Exception:
+                pass
+        turns.append(turn)
+
+    # 2. Fetch full analytics for this simulation
+    try:
+        analytics = analytics_ctrl.get_simulation_analytics(simulation_id)
+    except Exception as e:
+        logger.warning(f"Could not compute analytics for {simulation_id}: {e}")
+        analytics = {
+            "nodes": [],
+            "edges": [],
+            "trajectory": [],
+            "agreement": [],
+            "influence": {},
+            "persuasion_signals": [],
+            "citations": [],
+        }
+
+    # Package into 1 single unified object
+    sim["turns"] = turns
+    sim["analytics"] = analytics
+
     return success_response(message="Simulation retrieved.", data=sim)
 
 
@@ -228,13 +273,7 @@ def list_predefined_topics():
             "title": "EU AI Act Article 51: Should training clusters >10^26 FLOPs face strict third-party audit vetoes?",
             "tag": "Regulatory Compliance",
             "description": "European single-market innovation vs. systemic catastrophe mitigation.",
-        },
-        {
-            "id": "topic-3",
-            "title": "Should AI developers be held strictly liable for copyright infringement in pre-training scraping?",
-            "tag": "IP & Synthetic Data",
-            "description": "Fair use doctrines vs. creator compensation in generative foundation models.",
-        },
+        }
     ]
     return success_response(message="Predefined topics retrieved.", data=topics, status_code=200)
 

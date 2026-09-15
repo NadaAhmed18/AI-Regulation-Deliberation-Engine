@@ -1,19 +1,25 @@
 import threading
 from typing import Any, Dict, List, Optional
 
-from src.controllers.repository.analytics_repository import AnalyticsRepository
 from src.analytics.engine import DiscussionAnalyticsEngine
+from src.controllers.repository.analytics_repository import AnalyticsRepository
+from src.controllers.repository.simulation_repository import SimulationRepository
 
 
 class AnalyticsController:
     """
-    Singleton Controller managing analytics retrieval, computation, and caching.
-    Decouples raw DB access from mathematical calculation engines.
+    Central Controller for metrics calculation, trajectory extraction, and replay analysis.
     """
     _instance: Optional["AnalyticsController"] = None
     _lock: threading.Lock = threading.Lock()
 
-    def __new__(cls, *args, **kwargs) -> "AnalyticsController":
+    # Explicit class-level type annotations for Pylance
+    repo: AnalyticsRepository
+    sim_repo: SimulationRepository
+    engine: DiscussionAnalyticsEngine
+    _initialized: bool
+
+    def __new__(cls) -> "AnalyticsController":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -21,110 +27,125 @@ class AnalyticsController:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if getattr(self, "_initialized", False):
             return
 
         self.repo = AnalyticsRepository()
+        self.sim_repo = SimulationRepository()
         self.engine = DiscussionAnalyticsEngine()
         self._initialized = True
 
     def get_simulation_analytics(
         self,
         simulation_id: str,
+        round_number: Optional[int] = None,
         force_compute: bool = False,
     ) -> Dict[str, Any]:
         """
-        Retrieves analytics for a simulation.
-        Serves from cache if the debate has concluded, or computes live using the engine.
+        Retrieves complete analytics.
+        - If round_number is provided: Computes historical point-in-time metrics (Replay mode).
+        - If debate is complete and round_number is None: Serves from pre-calculated cache.
+        - Otherwise: Computes live metrics from database history.
         """
-        sim_meta = self.repo.get_simulation_metadata(simulation_id)
-        if not sim_meta:
-            raise ValueError(f"Simulation ID '{simulation_id}' not found.")
+        sim = self.sim_repo.get_simulation_by_id(simulation_id)
+        if not sim:
+            raise ValueError(f"Simulation '{simulation_id}' not found.")
 
-        is_completed = sim_meta.get("status") == "completed"
+        is_completed = sim.get("status") == "completed"
+        is_replay = round_number is not None
 
-        # 1. CACHE HIT: Attach citations dynamically from discussion_history
-        if is_completed and not force_compute:
+        # 1. Cache hit (Only for full, completed debates without replay slicing)
+        if is_completed and not force_compute and not is_replay:
             cached = self.repo.get_cached_analytics(simulation_id)
             if cached:
-                history = self.repo.fetch_discussion_history(simulation_id)
-                cached["citations"] = self.engine.extract_citations(history)
-                return cached
+                history = self.sim_repo.get_discussion_history(simulation_id)
+                return self._format_response(cached, history, sim.get("personas", []))
 
-        # 2. CACHE MISS / LIVE: Compute fresh metrics via engine
-        history = self.repo.fetch_discussion_history(simulation_id)
-        personas = sim_meta.get("personas") or []
-        visibility_matrix = sim_meta.get("visibility_matrix") or {}
-        topic = sim_meta.get("topic", "")
+        # 2. Query discussion history (filtered by round_number if in Replay mode)
+        history = self.sim_repo.get_discussion_history(simulation_id, up_to_round=round_number)
+        personas = sim.get("personas") or []
+        visibility_matrix = sim.get("visibility_matrix") or {}
+        topic = sim.get("topic", "")
 
-        analytics_result = self.engine.compute_all_metrics(
+        # 3. Compute dynamic analytics via DiscussionAnalyticsEngine
+        metrics = self.engine.compute_all_metrics(
             topic=topic,
             personas=personas,
             history=history,
             visibility_matrix=visibility_matrix,
         )
 
-        # 3. SAVE TO DB: Save cache without citations column
-        self.repo.save_analytics_cache(
-            simulation_id=simulation_id,
-            opinion_change=analytics_result["opinion_change"],
-            agreement=analytics_result["agreement"],
-            influence=analytics_result["influence"],
-            network_graph=analytics_result["network_graph"],
-            persuasion_signals=analytics_result["persuasion_signals"],
-        )
+        # 4. Cache full result if debate concluded and not a slice
+        if is_completed and not is_replay:
+            self.repo.save_analytics_cache(
+                simulation_id=simulation_id,
+                opinion_change=metrics["opinion_change"],
+                agreement=metrics["agreement"],
+                influence=metrics["influence"],
+                network_graph=metrics["network_graph"],
+                persuasion_signals=metrics["persuasion_signals"],
+            )
 
-        analytics_result["simulation_id"] = simulation_id
-        return analytics_result
+        # 5. Build standardized UI payload (nodes, edges, trajectories, consensus)
+        return self._format_response(metrics, history, personas, is_replay=is_replay, current_round=round_number)
 
     def compute_turn_analytics(self, simulation_id: str) -> Dict[str, Any]:
-        """Hook called at the end of each discussion step to update analytics cache in real time."""
+        """Triggered automatically after turns to update simulation metrics."""
         return self.get_simulation_analytics(simulation_id, force_compute=True)
 
-    def calculate_turn_summary(
+    def _format_response(
         self,
-        simulation_id: str,
-        current_turns: List[Dict[str, Any]],
-        current_personas: List[Dict[str, Any]],
+        data: Dict[str, Any],
+        history: List[Dict[str, Any]],
+        personas: List[Dict[str, Any]],
+        is_replay: bool = False,
+        current_round: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Calculates quantitative overview metrics (turns, activity, stances)."""
-        total_turns = len(current_turns)
-        unique_agents = len({
-            turn.get("agent_name") or turn.get("agent")
-            for turn in current_turns
-            if turn.get("agent_name") or turn.get("agent")
+        """Aligns backend metrics with the exact UI graph, chart, and trajectory schemas."""
+        network = data.get("network_graph", {})
+        nodes = network.get("nodes", [])
+
+        # Fallback node formatting if served directly from cache
+        if not nodes and personas:
+            for idx, p in enumerate(personas):
+                latest = next((h for h in reversed(history) if h.get("agent_name") == p["name"]), None)
+                stance = 0.0
+                if latest and latest.get("opinion_snapshot"):
+                    stance = float(latest["opinion_snapshot"].get("current_stance_score", 0.0))
+
+                nodes.append({
+                    "id": p["name"],
+                    "name": p["name"],
+                    "avatarUrl": f"/avatar/{(idx % 5) + 1:02d}.png",
+                    "currentStance": stance,
+                    "role": p.get("background", "Panelist"),
+                })
+
+        # Build trajectory points for time-series charts
+        trajectory_map: Dict[int, Dict[str, Any]] = {}
+        for turn in history:
+            rnd = turn.get("round_number", 1)
+            trajectory_map.setdefault(rnd, {"round": f"R{rnd}"})
+            snapshot = turn.get("opinion_snapshot") or {}
+            trajectory_map[rnd][turn["agent_name"]] = snapshot.get("current_stance_score", 0.0)
+
+        # Aggregate unique citations
+        citations = sorted({
+            str(src).strip()
+            for turn in history
+            for src in (turn.get("retrieved_sources") or [])
+            if str(src).strip()
         })
 
-        agent_counts: Dict[str, int] = {}
-        for turn in current_turns:
-            agent_name = turn.get("agent_name") or turn.get("agent")
-            if agent_name:
-                agent_counts[agent_name] = agent_counts.get(agent_name, 0) + 1
-
-        most_active_agent: Optional[str] = None
-        most_active_agent_turns: int = 0
-        if agent_counts:
-            most_active_agent = max(agent_counts, key=lambda k: agent_counts[k])
-            most_active_agent_turns = agent_counts[most_active_agent]
-
-        stance_scores: List[float] = []
-        for turn in current_turns:
-            opinion = turn.get("opinion_snapshot") or {}
-            score = opinion.get("current_stance_score")
-            if score is not None:
-                try:
-                    stance_scores.append(float(score))
-                except (TypeError, ValueError):
-                    pass
-
-        avg_stance_score = (sum(stance_scores) / len(stance_scores)) if stance_scores else None
-
         return {
-            "simulation_id": simulation_id,
-            "total_turns": total_turns,
-            "unique_agents": unique_agents,
-            "avg_stance_score": avg_stance_score,
-            "most_active_agent": most_active_agent,
-            "most_active_agent_turns": most_active_agent_turns,
+            "nodes": nodes,
+            "edges": network.get("edges", []),
+            "trajectory": list(trajectory_map.values()),
+            "agreement": data.get("agreement", []),
+            "influence": data.get("influence", {}),
+            "persuasion_signals": data.get("persuasion_signals", []),
+            "citations": citations,
+            "is_replay": is_replay,
+            "current_round": current_round,
         }

@@ -1,11 +1,12 @@
-from fastapi import Request
-from src.clients.postgres import PostgresClient
-from src.clients.neo4j import Neo4jClient
+from src.controllers.analytics_controller import AnalyticsController
+from src.controllers.simulation_controller import SimulationController
 
-def get_pg_client(request: Request) -> PostgresClient:
-    """Returns the singleton pooled PostgresClient instance from app.state."""
-    return request.app.state.pg_client
 
-def get_neo4j_client(request: Request) -> Neo4jClient:
-    """Returns the singleton Neo4jClient driver instance from app.state."""
-    return request.app.state.neo4j_client
+def get_simulation_controller() -> SimulationController:
+    """Provides the singleton SimulationController encapsulating database operations."""
+    return SimulationController()
+
+
+def get_analytics_controller() -> AnalyticsController:
+    """Provides the singleton AnalyticsController with caching and replay capabilities."""
+    return AnalyticsController()

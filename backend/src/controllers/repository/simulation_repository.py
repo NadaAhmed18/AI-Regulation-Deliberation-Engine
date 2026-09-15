@@ -1,65 +1,20 @@
 import json
 import threading
-from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-import psycopg2
-from psycopg2.extras import RealDictCursor
-
-from src.clients.postgres import PostgresClient
-from src.config import DATABASE_URL
+from src.controllers.repository.base_repository import BaseRepository
 
 
-class SimulationRepository:
-    """
-    Singleton repository managing database transactions for simulations and discussion history.
-    Provides thread-safe connection pooling and cursor execution.
-    """
+class SimulationRepository(BaseRepository):
+    """Data access layer for Simulation life-cycles and Discussion history."""
     _instance: Optional["SimulationRepository"] = None
-    _lock: threading.Lock = threading.Lock()
+    _inst_lock: threading.Lock = threading.Lock()
 
-    def __new__(cls, *args, **kwargs) -> "SimulationRepository":
+    def __new__(cls) -> "SimulationRepository":
         if cls._instance is None:
-            with cls._lock:
+            with cls._inst_lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
         return cls._instance
-
-    def __init__(self):
-        if getattr(self, "_initialized", False):
-            return
-
-        # Ensure database tables exist via PostgresClient DDL
-        PostgresClient()
-
-        self._conn: Optional[psycopg2.extensions.connection] = None
-        self._connect()
-        self._initialized = True
-
-    def _connect(self) -> None:
-        """Initializes or resets the persistent connection."""
-        if self._conn is not None and not self._conn.closed:
-            return
-        self._conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
-    @contextmanager
-    def _get_cursor(self):
-        """Thread-safe context manager providing an auto-committing cursor with rollback safety."""
-        with self._lock:
-            if self._conn is None or self._conn.closed:
-                self._connect()
-
-            assert self._conn is not None
-            cursor = self._conn.cursor()
-            try:
-                yield cursor
-                self._conn.commit()
-            except Exception:
-                if self._conn and not self._conn.closed:
-                    self._conn.rollback()
-                raise
-            finally:
-                cursor.close()
 
     def create_simulation(
         self,
@@ -69,12 +24,11 @@ class SimulationRepository:
         personas: list,
         visibility_matrix: Optional[Dict[str, List[str]]] = None,
     ) -> None:
-        """Inserts a new simulation configuration record into PostgreSQL."""
-        with self._get_cursor() as cur:
+        with self.get_cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO simulations (simulation_id, topic, memory_strategy, personas, visibility_matrix)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO simulations (simulation_id, topic, memory_strategy, personas, visibility_matrix, status)
+                VALUES (%s, %s, %s, %s, %s, 'active')
                 """,
                 (
                     sim_id,
@@ -95,8 +49,7 @@ class SimulationRepository:
         opinion: Optional[dict] = None,
         sources: Optional[list] = None,
     ) -> None:
-        """Appends a completed agent turn with its opinion snapshot and cited sources."""
-        with self._get_cursor() as cur:
+        with self.get_cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO discussion_history (
@@ -115,67 +68,11 @@ class SimulationRepository:
                 ),
             )
 
-    def get_all_simulations(self) -> List[Dict[str, Any]]:
-        """Returns all simulations ordered by most recent, with turn counts."""
-        with self._get_cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    s.simulation_id,
-                    s.topic,
-                    s.status,
-                    s.memory_strategy,
-                    s.personas,
-                    s.created_at,
-                    COUNT(h.id) AS turn_count
-                FROM simulations s
-                LEFT JOIN discussion_history h
-                    ON h.simulation_id = s.simulation_id
-                GROUP BY s.simulation_id
-                ORDER BY s.created_at DESC
-                """
-            )
-            rows = cur.fetchall()
-            return [dict(row) for row in rows]
-
-    def search_simulations_by_regex(self, pattern: str) -> List[Dict[str, Any]]:
-        """Filters simulations by topic using case-insensitive PostgreSQL regex."""
-        with self._get_cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    s.simulation_id,
-                    s.topic,
-                    s.status,
-                    s.memory_strategy,
-                    s.personas,
-                    s.created_at,
-                    COUNT(h.id) AS turn_count
-                FROM simulations s
-                LEFT JOIN discussion_history h
-                    ON h.simulation_id = s.simulation_id
-                WHERE s.topic ~* %s
-                GROUP BY s.simulation_id
-                ORDER BY s.created_at DESC
-                """,
-                (pattern,),
-            )
-            rows = cur.fetchall()
-            return [dict(row) for row in rows]
-
     def get_simulation_by_id(self, sim_id: str) -> Optional[Dict[str, Any]]:
-        """Fetches a specific simulation record by its ID."""
-        with self._get_cursor() as cur:
+        with self.get_cursor() as cur:
             cur.execute(
                 """
-                SELECT
-                    simulation_id,
-                    topic,
-                    status,
-                    memory_strategy,
-                    personas,
-                    visibility_matrix,
-                    created_at
+                SELECT simulation_id, topic, status, memory_strategy, personas, visibility_matrix, created_at
                 FROM simulations
                 WHERE simulation_id = %s
                 """,
@@ -184,70 +81,75 @@ class SimulationRepository:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def delete_simulation(self, sim_id: str) -> bool:
-        """Deletes a simulation. Cascades to history and analytics."""
-        with self._get_cursor() as cur:
-            cur.execute(
-                """
-                DELETE FROM simulations
-                WHERE simulation_id = %s
-                """,
-                (sim_id,),
-            )
-            return cur.rowcount > 0
+    def get_all_simulations(self, search_pattern: Optional[str] = None) -> List[Dict[str, Any]]:
+        query = """
+            SELECT 
+                s.simulation_id, s.topic, s.status, s.memory_strategy, 
+                s.personas, s.created_at, COUNT(h.id) AS turn_count
+            FROM simulations s
+            LEFT JOIN discussion_history h ON h.simulation_id = s.simulation_id
+            WHERE (%s IS NULL OR s.topic ~* %s)
+            GROUP BY s.simulation_id
+            ORDER BY s.created_at DESC
+        """
+        with self.get_cursor() as cur:
+            cur.execute(query, (search_pattern, search_pattern))
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_current_discussion_history(
+        self, 
+        sim_id: str, 
+        up_to_round: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetches chronological debate turns, optionally sliced up to a specific round for replay."""
+        query = """
+            SELECT id, round_number, agent_name, role, content, opinion_snapshot, retrieved_sources, created_at
+            FROM discussion_history
+            WHERE simulation_id = %s
+        """
+        params: list = [sim_id]
+
+        if up_to_round is not None:
+            query += " AND round_number <= %s"
+            params.append(up_to_round)
+
+        query += " ORDER BY round_number ASC, id ASC"
+
+        with self.get_cursor() as cur:
+            cur.execute(query, tuple(params))
+            return [dict(row) for row in cur.fetchall()]
+
+    # Alias for backward compatibility
+    get_discussion_history = get_current_discussion_history
 
     def get_last_stance_score(self, sim_id: str, agent_name: str) -> Optional[float]:
-        """Fetches an agent's most recent stance score, or None if never scored."""
-        with self._get_cursor() as cur:
+        with self.get_cursor() as cur:
             cur.execute(
                 """
                 SELECT opinion_snapshot->>'current_stance_score' AS score
                 FROM discussion_history
                 WHERE simulation_id = %s AND agent_name = %s AND opinion_snapshot IS NOT NULL
-                ORDER BY id DESC
-                LIMIT 1
+                ORDER BY id DESC LIMIT 1
                 """,
                 (sim_id, agent_name),
             )
             row: Any = cur.fetchone()
-            if row is None or row["score"] is None:
-                return None
-            return float(row["score"])
+            if row is not None and row.get("score") is not None:
+                return float(row["score"])
+            return None
 
     def get_last_round_number(self, sim_id: str) -> int:
-        """Returns the highest round number reached in this simulation."""
-        with self._get_cursor() as cur:
+        with self.get_cursor() as cur:
             cur.execute(
-                """
-                SELECT COALESCE(MAX(round_number), 0) AS last_round 
-                FROM discussion_history 
-                WHERE simulation_id = %s
-                """,
+                "SELECT COALESCE(MAX(round_number), 0) AS last_round FROM discussion_history WHERE simulation_id = %s",
                 (sim_id,),
             )
             row: Any = cur.fetchone()
-            if row and row["last_round"] is not None:
+            if row is not None and row.get("last_round") is not None:
                 return int(row["last_round"])
             return 0
 
-    def get_current_discussion_history(self, sim_id: str) -> List[Dict[str, Any]]:
-        """Returns full discussion turns chronologically."""
-        with self._get_cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, round_number, agent_name, role, content, opinion_snapshot, retrieved_sources, created_at
-                FROM discussion_history
-                WHERE simulation_id = %s
-                ORDER BY round_number ASC, id ASC
-                """,
-                (sim_id,),
-            )
-            rows = cur.fetchall()
-            return [dict(row) for row in rows]
-
-    def close(self) -> None:
-        """Closes the shared connection."""
-        with self._lock:
-            if self._conn is not None and not self._conn.closed:
-                self._conn.close()
-                self._conn = None
+    def delete_simulation(self, sim_id: str) -> bool:
+        with self.get_cursor() as cur:
+            cur.execute("DELETE FROM simulations WHERE simulation_id = %s", (sim_id,))
+            return cur.rowcount > 0

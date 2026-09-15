@@ -1,9 +1,7 @@
 import logging
-from fastapi import APIRouter, Depends
-from ..utils.response import success_response, fail_response
-from src.clients.postgres import PostgresClient
-from src.clients.neo4j import Neo4jClient
-from .dependencies import get_pg_client, get_neo4j_client
+from fastapi import APIRouter
+from src.utils.response import success_response, fail_response
+from src.controllers.repository.base_repository import BaseRepository
 
 logger = logging.getLogger("uvicorn")
 base_router = APIRouter(tags=["health"])
@@ -19,29 +17,27 @@ def ping():
 
 
 @base_router.get("/health")
-def health_check(
-    pg: PostgresClient = Depends(get_pg_client),
-    neo4j: Neo4jClient = Depends(get_neo4j_client),
-):
+def health_check():
+    """Validates the health of both PostgreSQL and Neo4j via the unified BaseRepository."""
     services: dict[str, str] = {}
+    repo = BaseRepository()
 
     # PostgreSQL check
     try:
-        with pg.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1 AS ping")
+        with repo.get_cursor() as cur:
+            cur.execute("SELECT 1 AS ping")
         services["postgres"] = "ok"
     except Exception as e:
         logger.error(f"PostgreSQL health check failed: {e}")
-        services["postgres"] = f"error: {e}"
+        services["postgres"] = f"error: {str(e)}"
 
     # Neo4j check
     try:
-        neo4j.execute_query("RETURN 1 AS ping")
+        repo.run_neo4j_query("RETURN 1 AS ping")
         services["neo4j"] = "ok"
     except Exception as e:
         logger.error(f"Neo4j health check failed: {e}")
-        services["neo4j"] = f"error: {e}"
+        services["neo4j"] = f"error: {str(e)}"
 
     is_healthy = all(status == "ok" for status in services.values())
     message = "All services are healthy." if is_healthy else "One or more services are unhealthy."

@@ -4,6 +4,8 @@ import threading
 import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
+from langfuse import observe
+
 from src.agent.base_agent import BaseAgent
 from src.agent.memory.memory_manager import ConversationContextManager
 from src.clients.llm_client import LLMClient
@@ -177,6 +179,7 @@ class SimulationController:
             "analytics": analytics,
         }
 
+    @observe(name="discussion_turn_stream")
     def stream_discussion_turn(self, simulation_id: str,intervention: Optional[str] = None) -> Iterator[Dict[str, Any]]:
         """
         Streams turn execution via SSE:

@@ -81,7 +81,7 @@ const MetricInfoBadge: React.FC<{
   return (
     <TooltipProvider delay={150}>
       <UITooltip>
-        <TooltipTrigger>
+        <TooltipTrigger aschild="true">
           <button
             type="button"
             className="inline-flex items-center text-muted-foreground/70 hover:text-teal-600 transition-colors p-0.5 rounded cursor-pointer"

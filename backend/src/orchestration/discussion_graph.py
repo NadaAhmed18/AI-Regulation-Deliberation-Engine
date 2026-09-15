@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
-from langfuse import observe
+from langfuse import observe, get_client
 
 from src.agent.base_agent import BaseAgent
 from src.agent.memory.memory_manager import ConversationContextManager
@@ -126,6 +126,16 @@ class DiscussionEngine:
         intervention: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Executes N discrete turns through the deliberation graph and pauses."""
+        try:
+            update_current_trace = getattr(get_client(), "update_current_trace", None)
+            if callable(update_current_trace):
+                update_current_trace(
+                    session_id=sim_id,  # <--- ENABLES SESSIONS FOR SYNC RUNS
+                    metadata={"simulation_id": sim_id},
+                )
+        except Exception:
+            pass
+        
         sim = self.repo.get_simulation_by_id(sim_id)
         if not sim:
             raise ValueError(f"Simulation ID '{sim_id}' not found.")

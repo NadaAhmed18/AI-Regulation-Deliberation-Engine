@@ -53,6 +53,7 @@ interface ParsedContentResult {
     url: string;
     domain: string;
     path: string;
+    locator?: string;
   }>;
 }
 
@@ -66,11 +67,20 @@ function parseAndFormatContent(
     url: string;
     domain: string;
     path: string;
+    locator?: string;
   }> = [];
 
-  const registerUrl = (rawUrl: string): number => {
+  // Register a URL and assign a continuous 1-based index
+  const registerUrl = (rawUrl: string, locator?: string): number => {
     const cleanUrl = rawUrl.trim();
-    if (urlMap.has(cleanUrl)) return urlMap.get(cleanUrl)!;
+    if (urlMap.has(cleanUrl)) {
+      const existingIdx = urlMap.get(cleanUrl)!;
+      if (locator && !references[existingIdx - 1]?.locator) {
+        references[existingIdx - 1].locator = locator;
+      }
+      return existingIdx;
+    }
+
     const newIdx = references.length + 1;
     urlMap.set(cleanUrl, newIdx);
 
@@ -80,44 +90,114 @@ function parseAndFormatContent(
       const u = new URL(cleanUrl);
       domain = u.hostname.replace(/^www\./, "");
       path = u.pathname;
-    } catch {}
+    } catch {
+      domain = cleanUrl.replace(/^https?:\/\//, "").split("/")[0] || cleanUrl;
+    }
 
-    references.push({ index: newIdx, url: cleanUrl, domain, path });
+    references.push({ index: newIdx, url: cleanUrl, domain, path, locator });
     return newIdx;
   };
 
-  // Register explicit sources from tool calls
-  extraSources.forEach((s) => {
-    if (s && s.startsWith("http")) registerUrl(s);
+  // Pre-seed known URLs from tool execution into reference indices
+  extraSources.forEach((src) => {
+    if (src && (src.startsWith("http://") || src.startsWith("https://"))) {
+      registerUrl(src);
+    }
   });
 
-  // Regex to match 【source 1†https://...】 or 【https://...】
-  const citationRegex = /【(?:source\s*\d*†|\d*†)?(https?:\/\/[^\s】]+)】/gi;
+  // 1. Matches ANY bracketed citation: 【...】
+  const bracketCitationRegex = /【([^】]+)】/g;
+
   const segments: React.ReactNode[] = [];
   let lastIdx = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = citationRegex.exec(content)) !== null) {
+  while ((match = bracketCitationRegex.exec(content)) !== null) {
     const textBefore = content.substring(lastIdx, match.index);
     if (textBefore) {
       segments.push(renderMarkdownFormatting(textBefore, `txt-${lastIdx}`));
     }
 
-    const matchedUrl = match[1];
-    const refIdx = registerUrl(matchedUrl);
+    // Normalize unicode spaces (e.g. \u202F, \u00A0) to standard spaces
+    const rawInner = match[1];
+    const inner = rawInner.replace(/[\u202F\u00A0\r\n\t]/g, " ").trim();
 
-    segments.push(
-      <a
-        key={`ref-${match.index}`}
-        href={matchedUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        title={matchedUrl}
-        className="inline-flex items-center mx-0.5 px-1 py-0.2 rounded text-[9.5px] font-mono font-bold bg-teal-500/15 text-teal-700 dark:text-teal-300 hover:bg-teal-500/30 hover:underline align-baseline"
-      >
-        [{refIdx}]
-      </a>,
-    );
+    // Strategy A: Direct URL inside tag? (e.g. 【https://...】 or 【source 1†https://...】)
+    const directUrlMatch = inner.match(/https?:\/\/[^\s】]+/i);
+
+    // Strategy B: Parse index and locator (e.g. "source 1†L23-L28", "source 2†L1-L4", "2†source", "1")
+    let sourceNum: number | null = null;
+    let locator: string | undefined = undefined;
+
+    if (inner.includes("†")) {
+      const parts = inner.split("†").map((p) => p.trim());
+      const numMatchLeft = parts[0].match(/\d+/);
+      const numMatchRight = parts[1].match(/\d+/);
+
+      if (numMatchLeft) {
+        sourceNum = parseInt(numMatchLeft[0], 10);
+        if (
+          parts[1].toLowerCase() !== "source" &&
+          !parts[1].startsWith("http")
+        ) {
+          locator = parts[1]; // e.g. "L23-L28"
+        }
+      } else if (numMatchRight) {
+        sourceNum = parseInt(numMatchRight[0], 10);
+      }
+    } else {
+      const numMatch = inner.match(/\d+/);
+      if (numMatch) {
+        sourceNum = parseInt(numMatch[0], 10);
+      }
+    }
+
+    let targetUrl = "";
+    let displayIdx = 0;
+
+    if (directUrlMatch) {
+      targetUrl = directUrlMatch[0];
+      displayIdx = registerUrl(targetUrl, locator);
+    } else if (sourceNum !== null) {
+      // 1-based index pointing to extraSources
+      const candidateUrl = extraSources[sourceNum - 1];
+      if (candidateUrl) {
+        targetUrl = candidateUrl;
+        displayIdx = registerUrl(targetUrl, locator);
+      } else {
+        displayIdx = sourceNum;
+      }
+    }
+
+    // Render clickable footnote badge if URL resolved, or clean pill if unresolved
+    if (targetUrl) {
+      segments.push(
+        <a
+          key={`ref-${match.index}`}
+          href={targetUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`${targetUrl}${locator ? ` (${locator})` : ""}`}
+          className="inline-flex items-center mx-0.5 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-teal-500/15 text-teal-700 dark:text-teal-300 hover:bg-teal-500/30 hover:underline align-baseline group"
+        >
+          [{displayIdx}]
+        </a>,
+      );
+    } else {
+      segments.push(
+        <span
+          key={`ref-fallback-${match.index}`}
+          title={
+            locator
+              ? `Source ${sourceNum || displayIdx} (${locator})`
+              : `Source ${sourceNum || displayIdx}`
+          }
+          className="inline-flex items-center mx-0.5 px-1.5 py-0.2 rounded text-[9.5px] font-mono font-semibold bg-muted text-muted-foreground border border-border/50 align-baseline"
+        >
+          [{displayIdx || sourceNum || "Ref"}]
+        </span>,
+      );
+    }
 
     lastIdx = match.index + match[0].length;
   }
@@ -840,7 +920,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                                 href={ref.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-1.5 p-1 rounded bg-muted/40 hover:bg-teal-50 dark:hover:bg-teal-950/50 text-[10.5px] text-teal-700 dark:text-teal-300 transition-colors border border-border/40 group/link"
+                                className="flex items-center gap-1.5 p-1.5 rounded bg-muted/40 hover:bg-teal-50 dark:hover:bg-teal-950/50 text-[10.5px] text-teal-700 dark:text-teal-300 transition-colors border border-border/40 group/link"
                               >
                                 <span className="font-mono font-bold text-teal-600 dark:text-teal-400 text-[9.5px] shrink-0">
                                   [{ref.index}]
@@ -848,6 +928,11 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                                 <span className="font-semibold text-foreground truncate max-w-[140px]">
                                   {ref.domain}
                                 </span>
+                                {ref.locator && (
+                                  <span className="px-1 py-0.2 text-[9px] font-mono bg-teal-500/10 text-teal-600 dark:text-teal-400 rounded border border-teal-500/20 shrink-0">
+                                    {ref.locator}
+                                  </span>
+                                )}
                                 <span className="text-muted-foreground truncate flex-1 text-[10px]">
                                   {ref.path || "/"}
                                 </span>

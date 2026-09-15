@@ -177,7 +177,7 @@ class SimulationController:
             "analytics": analytics,
         }
 
-    def stream_discussion_turn(self, simulation_id: str) -> Iterator[Dict[str, Any]]:
+    def stream_discussion_turn(self, simulation_id: str,intervention: Optional[str] = None) -> Iterator[Dict[str, Any]]:
         """
         Streams turn execution via SSE:
         1. Emits speaker selection
@@ -220,6 +220,7 @@ class SimulationController:
             system_prompt=agent.system_prompt,
             current_agent_name=next_speaker,
             allowed_speakers=allowed_speakers,
+            intervention=intervention,
         )
 
         # 3. Stream agent thinking, tool executions, and tokens

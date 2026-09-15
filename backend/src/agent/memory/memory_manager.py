@@ -37,6 +37,7 @@ class ConversationContextManager:
         current_agent_name: Optional[str] = None,
         allowed_speakers: Optional[List[str]] = None,
         history: Optional[List[Dict[str, Any]]] = None,
+        intervention: Optional[str] = None, # <--- ADD THIS
     ) -> List[Dict[str, Any]]:
         """
         Builds contextual messages. Uses provided history or queries SimulationRepository.
@@ -45,10 +46,10 @@ class ConversationContextManager:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
         if not raw_history:
-            messages.append({
-                "role": "user",
-                "content": f"The debate on '{self.topic}' is now starting. As {current_agent_name}, present your opening statement."
-            })
+            content = f"The debate on '{self.topic}' is now starting. As {current_agent_name}, present your opening statement."
+            if intervention:
+                content += f"\n\n[MODERATOR INTERVENTION / SPECIAL DIRECTIVE]: {intervention}\nYou must directly address this moderator directive in your opening remarks."
+            messages.append({"role": "user", "content": content})
             return messages
 
         # 1. Visibility Matrix Filter
@@ -78,5 +79,16 @@ class ConversationContextManager:
 
         else:  # 'full'
             messages.extend(self._format_turns(visible_history, current_agent_name))
+
+        # 3. Inject Moderator Intervention
+        if intervention and intervention.strip():
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"[MODERATOR INTERVENTION]: {intervention.strip()}\n"
+                    f"As {current_agent_name}, you MUST directly address this prompt/counter-argument "
+                    f"in your current turn while staying true to your assigned persona."
+                )
+            })
 
         return messages

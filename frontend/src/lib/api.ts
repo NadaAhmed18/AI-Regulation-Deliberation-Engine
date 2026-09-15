@@ -175,10 +175,12 @@ export const SimulationAPI = {
             onToolEnd?: (result: { name: string; observation: string }) => void;
             onComplete?: (data: { turn: DiscussionTurn; analytics: SimulationAnalytics }) => void;
             onError?: (err: string) => void;
-        }
+        },
+        intervention?: string
     ): () => void {
         const controller = new AbortController();
-        const url = `${BACKEND_URL}/simulations/${encodeURIComponent(simulationId)}/stream-turn`;
+        const queryParams = intervention ? `?intervention=${encodeURIComponent(intervention)}` : "";
+        const url = `${BACKEND_URL}/simulations/${encodeURIComponent(simulationId)}/stream-turn${queryParams}`;
 
         (async () => {
             try {

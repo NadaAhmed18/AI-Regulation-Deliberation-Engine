@@ -26,6 +26,7 @@ simulation_router = APIRouter(tags=["simulations"])
 @simulation_router.get("/simulations/{simulationId}/stream-turn")
 def stream_turn(
     simulationId: str,
+    intervention: Optional[str] = Query(None, description="Human moderator steering input"),
     sim_ctrl: SimulationController = Depends(get_simulation_controller),
 ):
     """
@@ -38,7 +39,7 @@ def stream_turn(
 
     def event_generator():
         try:
-            for event in sim_ctrl.stream_discussion_turn(simulationId):
+            for event in sim_ctrl.stream_discussion_turn(simulationId, intervention=intervention):
                 event_name = event.get("type", "message")
                 yield f"event: {event_name}\ndata: {json.dumps(event)}\n\n"
         except Exception as e:

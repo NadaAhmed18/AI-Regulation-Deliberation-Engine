@@ -61,68 +61,75 @@ export default function Home() {
     setErrorMessage(null);
   };
 
-  const runStreamingTurn = (targetSimId: string): Promise<void> => {
+  const runStreamingTurn = (
+    targetSimId: string,
+    intervention?: string,
+  ): Promise<void> => {
     return new Promise((resolve) => {
-      SimulationAPI.streamTurn(targetSimId, {
-        onSpeakerSelected: ({ speaker, round, avatarSeed }) => {
-          setLiveState({
-            speaker,
-            round,
-            avatarSeed,
-            thinking: "",
-            tokens: "",
-          });
+      SimulationAPI.streamTurn(
+        targetSimId,
+        {
+          onSpeakerSelected: ({ speaker, round, avatarSeed }) => {
+            setLiveState({
+              speaker,
+              round,
+              avatarSeed,
+              thinking: "",
+              tokens: "",
+            });
+          },
+          onThinking: (token) => {
+            setLiveState((prev) =>
+              prev ? { ...prev, thinking: prev.thinking + token } : prev,
+            );
+          },
+          onToken: (token) => {
+            setLiveState((prev) =>
+              prev ? { ...prev, tokens: prev.tokens + token } : prev,
+            );
+          },
+          onToolStart: (tool) => {
+            setLiveState((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    toolCall: {
+                      name: tool.name,
+                      arguments: tool.arguments,
+                      status: "running",
+                    },
+                  }
+                : prev,
+            );
+          },
+          onToolEnd: (tool) => {
+            setLiveState((prev) =>
+              prev && prev.toolCall
+                ? {
+                    ...prev,
+                    toolCall: {
+                      ...prev.toolCall,
+                      status: "done",
+                      observation: tool.observation,
+                    },
+                  }
+                : prev,
+            );
+          },
+          onComplete: ({ turn, analytics: updatedAnalytics }) => {
+            setTurns((prev) => [...prev, turn]);
+            if (updatedAnalytics) setAnalytics(updatedAnalytics);
+            setLiveState(null);
+            resolve();
+          },
+          onError: (err) => {
+            setErrorMessage(err);
+            setLiveState(null);
+            resolve();
+          },
         },
-        onThinking: (token) => {
-          setLiveState((prev) =>
-            prev ? { ...prev, thinking: prev.thinking + token } : prev,
-          );
-        },
-        onToken: (token) => {
-          setLiveState((prev) =>
-            prev ? { ...prev, tokens: prev.tokens + token } : prev,
-          );
-        },
-        onToolStart: (tool) => {
-          setLiveState((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  toolCall: {
-                    name: tool.name,
-                    arguments: tool.arguments,
-                    status: "running",
-                  },
-                }
-              : prev,
-          );
-        },
-        onToolEnd: (tool) => {
-          setLiveState((prev) =>
-            prev && prev.toolCall
-              ? {
-                  ...prev,
-                  toolCall: {
-                    ...prev.toolCall,
-                    status: "done",
-                    observation: tool.observation,
-                  },
-                }
-              : prev,
-          );
-        },
-        onComplete: ({ turn, analytics: updatedAnalytics }) => {
-          setTurns((prev) => [...prev, turn]);
-          if (updatedAnalytics) setAnalytics(updatedAnalytics);
-          setLiveState(null);
-          resolve();
-        },
-        onError: (err) => {
-          setErrorMessage(err);
-          setLiveState(null);
-          resolve();
-        },
-      });
+        intervention,
+      );
     });
   };
 
@@ -156,7 +163,7 @@ export default function Home() {
 
   const handleStepTurn = async (
     stepsCount: number = 1,
-    _intervention?: string,
+    intervention?: string,
   ) => {
     if (!simulationId || isRunning) return;
     setIsRunning(true);
@@ -164,7 +171,9 @@ export default function Home() {
 
     try {
       for (let i = 0; i < stepsCount; i++) {
-        await runStreamingTurn(simulationId);
+        // Pass intervention only on the first stepped turn
+        const activeIntervention = i === 0 ? intervention : undefined;
+        await runStreamingTurn(simulationId, activeIntervention);
       }
     } catch (err) {
       setErrorMessage(extractErrorMessage(err));

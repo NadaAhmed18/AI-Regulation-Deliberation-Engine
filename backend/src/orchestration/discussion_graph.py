@@ -21,6 +21,7 @@ class DebateState(TypedDict):
     last_message: str
     last_sources: list
     last_opinion: dict
+    intervention: Optional[str]
 
 
 class DiscussionEngine:
@@ -74,6 +75,7 @@ class DiscussionEngine:
             system_prompt=agent.system_prompt,
             current_agent_name=speaker,
             allowed_speakers=allowed,
+            intervention=state.get("intervention")
         )
 
         final_text, cited_sources = agent.run_react_loop(messages=messages)
@@ -121,6 +123,7 @@ class DiscussionEngine:
         sim_id: str,
         steps: int = 1,
         visibility_matrix: Optional[Dict[str, List[str]]] = None,
+        intervention: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Executes N discrete turns through the deliberation graph and pauses."""
         sim = self.repo.get_simulation_by_id(sim_id)
@@ -142,6 +145,7 @@ class DiscussionEngine:
             "last_message": "",
             "last_sources": [],
             "last_opinion": {},
+            "intervention": intervention,
         }
 
         return self.graph.invoke(resume_state)

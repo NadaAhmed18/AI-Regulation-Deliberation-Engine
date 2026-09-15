@@ -81,7 +81,7 @@ const MetricInfoBadge: React.FC<{
   return (
     <TooltipProvider delay={150}>
       <UITooltip>
-        <TooltipTrigger aschild="true">
+        <TooltipTrigger>
           <button
             type="button"
             className="inline-flex items-center text-muted-foreground/70 hover:text-teal-600 transition-colors p-0.5 rounded cursor-pointer"
@@ -212,7 +212,10 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   }, [analytics]);
 
   const topInfluencer = analytics?.influence?.top_influencer || null;
-  const influenceScores = analytics?.influence?.scores || {};
+  const influenceScores = useMemo(
+    () => analytics?.influence?.scores || {},
+    [analytics]
+  );
   const maxInfluenceScore = useMemo(() => {
     const vals = Object.values(influenceScores);
     return vals.length > 0 ? Math.max(...vals, 1) : 1;

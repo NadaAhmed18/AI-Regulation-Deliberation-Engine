@@ -31,6 +31,8 @@ import {
   ChevronUp,
   Info,
   Send,
+  ExternalLink,
+  BookOpen,
 } from "lucide-react";
 import {
   DiscussionTurn,
@@ -39,6 +41,116 @@ import {
   LiveStreamState,
 } from "@/types/simulation";
 import { SimulationAPI, getAvatarPath, extractErrorMessage } from "@/lib/api";
+
+/**
+ * Parses raw text with brackets like 【source 1†https://...】 into clean inline hyperlinks
+ * and generates structured bottom references.
+ */
+interface ParsedContentResult {
+  formattedParts: React.ReactNode[];
+  references: Array<{
+    index: number;
+    url: string;
+    domain: string;
+    path: string;
+  }>;
+}
+
+function parseAndFormatContent(
+  content: string,
+  extraSources: string[] = [],
+): ParsedContentResult {
+  const urlMap = new Map<string, number>();
+  const references: Array<{
+    index: number;
+    url: string;
+    domain: string;
+    path: string;
+  }> = [];
+
+  const registerUrl = (rawUrl: string): number => {
+    const cleanUrl = rawUrl.trim();
+    if (urlMap.has(cleanUrl)) return urlMap.get(cleanUrl)!;
+    const newIdx = references.length + 1;
+    urlMap.set(cleanUrl, newIdx);
+
+    let domain = cleanUrl;
+    let path = "";
+    try {
+      const u = new URL(cleanUrl);
+      domain = u.hostname.replace(/^www\./, "");
+      path = u.pathname;
+    } catch {}
+
+    references.push({ index: newIdx, url: cleanUrl, domain, path });
+    return newIdx;
+  };
+
+  // Register explicit sources from tool calls
+  extraSources.forEach((s) => {
+    if (s && s.startsWith("http")) registerUrl(s);
+  });
+
+  // Regex to match 【source 1†https://...】 or 【https://...】
+  const citationRegex = /【(?:source\s*\d*†|\d*†)?(https?:\/\/[^\s】]+)】/gi;
+  const segments: React.ReactNode[] = [];
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = citationRegex.exec(content)) !== null) {
+    const textBefore = content.substring(lastIdx, match.index);
+    if (textBefore) {
+      segments.push(renderMarkdownFormatting(textBefore, `txt-${lastIdx}`));
+    }
+
+    const matchedUrl = match[1];
+    const refIdx = registerUrl(matchedUrl);
+
+    segments.push(
+      <a
+        key={`ref-${match.index}`}
+        href={matchedUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={matchedUrl}
+        className="inline-flex items-center mx-0.5 px-1 py-0.2 rounded text-[9.5px] font-mono font-bold bg-teal-500/15 text-teal-700 dark:text-teal-300 hover:bg-teal-500/30 hover:underline align-baseline"
+      >
+        [{refIdx}]
+      </a>,
+    );
+
+    lastIdx = match.index + match[0].length;
+  }
+
+  const remaining = content.substring(lastIdx);
+  if (remaining) {
+    segments.push(renderMarkdownFormatting(remaining, `txt-${lastIdx}`));
+  }
+
+  return { formattedParts: segments, references };
+}
+
+function renderMarkdownFormatting(
+  text: string,
+  keyPrefix: string,
+): React.ReactNode {
+  // Simple bold markdown parser (**text**)
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <span key={keyPrefix}>
+      {parts.map((part, i) => {
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return (
+            <strong key={i} className="font-semibold text-foreground">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        return part;
+      })}
+    </span>
+  );
+}
 
 interface DebateArenaProps {
   turns: DiscussionTurn[];
@@ -195,9 +307,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
     setInterventionInput("");
   };
 
-  // =========================================================================
-  // VIEW 1: PRE-RUN CONFIGURATION SCREEN (UNLOCKED SCROLLING)
-  // =========================================================================
   if (isConfiguring) {
     const hasIncomplete = personas.some(
       (p) => !p.name.trim() || !p.background.trim(),
@@ -239,7 +348,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               {onClearError && (
                 <button
                   onClick={onClearError}
-                  style={{ cursor: "pointer" }}
                   className="absolute top-2.5 right-2.5 text-muted-foreground hover:text-foreground cursor-pointer"
                 >
                   <X className="w-4 h-4" />
@@ -248,7 +356,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             </Alert>
           )}
 
-          {/* 1. Deliberation Topic */}
+          {/* Topic */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3">
             <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
               <Sliders className="w-3.5 h-3.5" />
@@ -262,7 +370,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                   <div
                     key={pt.id}
                     onClick={() => onUpdateTopic(pt.title)}
-                    style={{ cursor: "pointer" }}
                     className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
                       isSelected
                         ? "bg-teal-50/80 dark:bg-teal-950/40 border-teal-500 text-teal-950 dark:text-teal-200 shadow-2xs"
@@ -294,7 +401,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             />
           </Card>
 
-          {/* 2. Communication Topology */}
+          {/* Topology */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
@@ -305,7 +412,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 variant="ghost"
                 size="sm"
                 onClick={() => setShowMatrixEditor((v) => !v)}
-                style={{ cursor: "pointer" }}
                 className="h-6 text-[10px] text-teal-700 dark:text-teal-300 cursor-pointer"
               >
                 {showMatrixEditor ? "Hide Matrix" : "Customize Edge Visibility"}
@@ -317,7 +423,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 <button
                   type="button"
                   onClick={() => setTopologyMode("ring")}
-                  style={{ cursor: "pointer" }}
                   className={`px-3 py-1 rounded text-[10px] font-semibold cursor-pointer ${
                     topologyMode === "ring"
                       ? "bg-teal-600 text-white"
@@ -329,7 +434,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 <button
                   type="button"
                   onClick={() => setTopologyMode("mesh")}
-                  style={{ cursor: "pointer" }}
                   className={`px-3 py-1 rounded text-[10px] font-semibold cursor-pointer ${
                     topologyMode === "mesh"
                       ? "bg-teal-600 text-white"
@@ -391,7 +495,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => toggleVisibility(lName, sName)}
-                                  style={{ cursor: "pointer" }}
                                   className={`p-1 rounded cursor-pointer ${isAllowed ? "text-emerald-600 bg-emerald-500/10" : "text-rose-500 bg-rose-500/10"}`}
                                 >
                                   {isAllowed ? (
@@ -412,7 +515,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             )}
           </Card>
 
-          {/* 3. Stakeholder Personas */}
+          {/* Stakeholders */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3.5">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
@@ -427,7 +530,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                       key={cnt}
                       type="button"
                       onClick={() => handleSetAgentCount(cnt)}
-                      style={{ cursor: "pointer" }}
                       className={`px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer ${
                         personas.length === cnt
                           ? "bg-teal-600 text-white"
@@ -443,7 +545,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                   variant="outline"
                   disabled={personas.length >= 5}
                   onClick={() => handleSetAgentCount(personas.length + 1)}
-                  style={{ cursor: "pointer" }}
                   className="h-7 text-xs cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5 mr-1" /> Add
@@ -464,7 +565,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 size="sm"
                 onClick={handleGenerateWithAI}
                 disabled={isGeneratingPersonas}
-                style={{ cursor: "pointer" }}
                 className="text-xs bg-teal-600 text-white hover:bg-teal-700 shrink-0 cursor-pointer"
               >
                 <Wand2 className="w-3.5 h-3.5 mr-1" />
@@ -506,7 +606,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                         onClick={() =>
                           onUpdatePersonas(personas.filter((_, i) => i !== idx))
                         }
-                        style={{ cursor: "pointer" }}
                         className="text-muted-foreground hover:text-destructive p-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -554,7 +653,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               })
             }
             disabled={!canLaunch}
-            style={{ cursor: canLaunch ? "pointer" : "not-allowed" }}
             className="w-full h-11 text-sm font-semibold bg-teal-600 hover:bg-teal-700 text-white shadow-md disabled:opacity-40 cursor-pointer"
           >
             <Play className="w-4 h-4 mr-2 fill-current" />
@@ -568,12 +666,12 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
   }
 
   // =========================================================================
-  // VIEW 2: ACTIVE LIVE DELIBERATION ARENA (UNLOCKED SCROLLING & NO RESET)
+  // VIEW 2: ARENA VIEW (FORMATTED CITATIONS & FOOTNOTES)
   // =========================================================================
   return (
     <>
       <div className="flex flex-col h-full min-h-0 bg-background/50 overflow-hidden">
-        {/* Top Arena Header */}
+        {/* Header */}
         <div className="p-3 border-b border-border/50 flex items-center justify-between bg-background/80 backdrop-blur-sm shrink-0">
           <div className="min-w-0 flex-1 pr-2">
             <div className="flex items-center gap-2">
@@ -595,7 +693,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             </p>
           </div>
 
-          {/* Quick Agent Filters */}
           <div className="hidden md:flex items-center gap-1 mr-2">
             <button
               onClick={() => setSelectedAgentFilter(null)}
@@ -622,21 +719,20 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     ? "bg-teal-600 text-white"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
+                title={p.name}
               >
-                {(p.name || "Agent").split(" ")[0]}
+                {/* Full name without .split(" ")[0] */}
+                {p.name || "Agent"}
               </button>
             ))}
           </div>
 
-          {/* Session Details Inspector (No Reset Button) */}
           <div className="flex items-center gap-1.5">
             <Button
               variant="outline"
               size="sm"
               onClick={() => setShowSessionDetails(true)}
-              style={{ cursor: "pointer" }}
               className="h-7 text-xs border-border/80 cursor-pointer"
-              title="Inspect Topology & Agent Roles"
             >
               <Info className="w-3.5 h-3.5 mr-1 text-teal-600 dark:text-teal-400" />
               Session Info
@@ -644,13 +740,12 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
           </div>
         </div>
 
-        {/* Discussion Turn Feed (Unconstrained internal scrolling) */}
+        {/* Turn Feed */}
         <div
           ref={turnsScrollRef}
           className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 scrollbar-thin"
         >
           <div className="space-y-4 max-w-3xl mx-auto pb-6">
-            {/* Empty state when historical session has zero turns */}
             {!isRunning && filteredTurns.length === 0 && (
               <div className="py-16 text-center space-y-2 text-muted-foreground">
                 <Bot className="w-8 h-8 mx-auto opacity-40 text-teal-600" />
@@ -668,6 +763,12 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               const shift = turn.opinion_snapshot?.shift_magnitude ?? 0;
               const cfg = turn.opinion_snapshot?.cfg;
               const avatar = getAgentAvatar(turn.agent_name);
+
+              // Parse citations out of text and build structured inline links + references
+              const { formattedParts, references } = parseAndFormatContent(
+                turn.content || "",
+                turn.retrieved_sources || [],
+              );
 
               return (
                 <div
@@ -723,7 +824,39 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     )}
 
                     <Card className="p-3.5 bg-card border-border/80 text-xs leading-relaxed text-foreground rounded-tl-none shadow-xs">
-                      {turn.content}
+                      <div>{formattedParts}</div>
+
+                      {/* Clean References Footer */}
+                      {references.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-border/50 space-y-1.5">
+                          <span className="text-[9.5px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                            <BookOpen className="w-3 h-3 text-teal-600 dark:text-teal-400" />
+                            Cited Sources & Evidence ({references.length})
+                          </span>
+                          <div className="grid grid-cols-1 gap-1">
+                            {references.map((ref) => (
+                              <a
+                                key={ref.index}
+                                href={ref.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1.5 p-1 rounded bg-muted/40 hover:bg-teal-50 dark:hover:bg-teal-950/50 text-[10.5px] text-teal-700 dark:text-teal-300 transition-colors border border-border/40 group/link"
+                              >
+                                <span className="font-mono font-bold text-teal-600 dark:text-teal-400 text-[9.5px] shrink-0">
+                                  [{ref.index}]
+                                </span>
+                                <span className="font-semibold text-foreground truncate max-w-[140px]">
+                                  {ref.domain}
+                                </span>
+                                <span className="text-muted-foreground truncate flex-1 text-[10px]">
+                                  {ref.path || "/"}
+                                </span>
+                                <ExternalLink className="w-3 h-3 text-muted-foreground group-hover/link:text-teal-600 shrink-0" />
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </Card>
 
                     {cfg && (
@@ -756,7 +889,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               );
             })}
 
-            {/* Live Streaming Speech / Thinking */}
+            {/* Live Streaming Box */}
             {isRunning && liveState && (
               <div className="flex items-start gap-3 border-l-2 border-teal-500 pl-3 py-1 animate-in fade-in">
                 <Avatar className="w-9 h-9 border-2 border-teal-500 animate-pulse shrink-0">
@@ -784,7 +917,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     <div className="rounded-lg bg-teal-950/20 border border-teal-500/30 p-2 text-xs">
                       <div
                         onClick={() => setShowThinkingPanel((v) => !v)}
-                        style={{ cursor: "pointer" }}
                         className="flex items-center justify-between text-[10px] font-semibold text-teal-600 dark:text-teal-400 cursor-pointer select-none"
                       >
                         <span className="flex items-center gap-1">
@@ -820,7 +952,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                   <Card className="p-3.5 bg-card/90 border-teal-500/40 text-xs leading-relaxed rounded-tl-none min-h-[50px] shadow-sm">
                     {liveState.tokens ? (
                       <span className="whitespace-pre-wrap">
-                        {liveState.tokens}
+                        {parseAndFormatContent(liveState.tokens).formattedParts}
                       </span>
                     ) : (
                       <span className="text-muted-foreground italic flex items-center gap-1">
@@ -833,7 +965,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               </div>
             )}
 
-            {/* Deliberation Call-To-Action Banner */}
+            {/* Steer / Next Turn CTA */}
             {!isRunning && turns.length > 0 && (
               <div className="p-4 rounded-xl bg-teal-50/70 dark:bg-teal-950/30 border border-teal-500/30 space-y-3 animate-in fade-in">
                 <div className="flex items-center justify-between">
@@ -866,7 +998,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     size="sm"
                     onClick={handleSendIntervention}
                     disabled={!interventionInput.trim() || isRunning}
-                    style={{ cursor: "pointer" }}
                     className="h-8 px-3 text-xs bg-teal-700 hover:bg-teal-800 text-white cursor-pointer"
                   >
                     <Send className="w-3 h-3 mr-1" />
@@ -877,7 +1008,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 <div className="flex items-center gap-2 pt-1">
                   <Button
                     onClick={() => onStepTurn(1)}
-                    style={{ cursor: "pointer" }}
                     className="flex-1 h-9 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-xs cursor-pointer"
                   >
                     <Play className="w-3.5 h-3.5 mr-1.5 fill-current" />
@@ -886,7 +1016,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                   <Button
                     variant="outline"
                     onClick={() => onStepTurn(3)}
-                    style={{ cursor: "pointer" }}
                     className="h-9 px-3 text-xs border-teal-500/40 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/50 cursor-pointer"
                   >
                     <FastForward className="w-3 h-3 mr-1" />
@@ -898,38 +1027,33 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
           </div>
         </div>
 
-        {/* Bottom Persistent Bar */}
+        {/* Persistent Bottom Bar */}
         <div className="p-3 border-t border-border/60 bg-background/90 backdrop-blur flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-1.5">
             <Button
               size="sm"
               onClick={() => onStepTurn(1)}
               disabled={isRunning}
-              style={{ cursor: isRunning ? "not-allowed" : "pointer" }}
               className="h-8 px-3.5 text-xs bg-teal-600 hover:bg-teal-700 text-white font-medium cursor-pointer disabled:opacity-50"
             >
               <Play className="w-3 h-3 mr-1.5 fill-current" />
               {isRunning ? "Deliberating..." : "Next Turn (+1)"}
             </Button>
-
             <Button
               size="sm"
               variant="outline"
               onClick={() => onStepTurn(3)}
               disabled={isRunning}
-              style={{ cursor: isRunning ? "not-allowed" : "pointer" }}
               className="h-8 px-2.5 text-xs border-teal-500/30 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 cursor-pointer disabled:opacity-50"
             >
               <FastForward className="w-3 h-3 mr-1" />
               +3 Turns
             </Button>
-
             <Button
               size="sm"
               variant="outline"
               onClick={() => onStepTurn(5)}
               disabled={isRunning}
-              style={{ cursor: isRunning ? "not-allowed" : "pointer" }}
               className="h-8 px-2.5 text-xs border-teal-500/30 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 cursor-pointer disabled:opacity-50"
             >
               +5 Turns
@@ -954,7 +1078,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               </h3>
               <button
                 onClick={() => setShowSessionDetails(false)}
-                style={{ cursor: "pointer" }}
                 className="text-muted-foreground hover:text-foreground cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -1026,7 +1149,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               <Button
                 size="sm"
                 onClick={() => setShowSessionDetails(false)}
-                style={{ cursor: "pointer" }}
                 className="text-xs h-8 bg-teal-600 hover:bg-teal-700 text-white cursor-pointer"
               >
                 Close Inspector

@@ -106,7 +106,6 @@ class AnalyticsController:
         network = data.get("network_graph", {})
         nodes = network.get("nodes", [])
 
-        # Fallback node formatting if served directly from cache
         if not nodes and personas:
             for idx, p in enumerate(personas):
                 latest = next((h for h in reversed(history) if h.get("agent_name") == p["name"]), None)
@@ -122,13 +121,30 @@ class AnalyticsController:
                     "role": p.get("background", "Panelist"),
                 })
 
-        # Build trajectory points for time-series charts
+        # Build continuous, forward-filled trajectory points for time-series charts
         trajectory_map: Dict[int, Dict[str, Any]] = {}
+        latest_stances: Dict[str, float] = {}
+
+        rounds = sorted({turn.get("round_number", 1) for turn in history})
+        turns_by_round: Dict[int, List[Dict[str, Any]]] = {}
         for turn in history:
             rnd = turn.get("round_number", 1)
-            trajectory_map.setdefault(rnd, {"round": f"R{rnd}"})
-            snapshot = turn.get("opinion_snapshot") or {}
-            trajectory_map[rnd][turn["agent_name"]] = snapshot.get("current_stance_score", 0.0)
+            turns_by_round.setdefault(rnd, []).append(turn)
+
+        for rnd in rounds:
+            for turn in turns_by_round.get(rnd, []):
+                agent = turn.get("agent_name")
+                snapshot = turn.get("opinion_snapshot") or {}
+                score = snapshot.get("current_stance_score")
+                if agent and score is not None:
+                    try:
+                        latest_stances[agent] = round(float(score), 2)
+                    except (ValueError, TypeError):
+                        pass
+
+            point: Dict[str, Any] = {"round": f"R{rnd}"}
+            point.update(latest_stances)
+            trajectory_map[rnd] = point
 
         # Aggregate unique citations
         citations = sorted({

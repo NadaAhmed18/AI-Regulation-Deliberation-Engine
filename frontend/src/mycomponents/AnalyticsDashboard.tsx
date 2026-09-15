@@ -5,13 +5,19 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip as UITooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   LineChart,
   Line,
   AreaChart,
   Area,
   XAxis,
   YAxis,
-  Tooltip,
+  Tooltip as RechartsTooltip,
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts";
@@ -31,6 +37,12 @@ import {
   Layers,
   Sparkles,
   TrendingUp,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  Globe,
+  Calculator,
+  Info,
 } from "lucide-react";
 import {
   DiscussionTurn,
@@ -57,6 +69,76 @@ const AGENT_COLORS = [
   "#f97316",
 ];
 
+/**
+ * Clean, uncompressed explanation mark with comfortable width (360px-400px)
+ * preventing cramped 5-line text wrapping.
+ */
+const MetricInfoBadge: React.FC<{
+  title: string;
+  whatItIs: string;
+  calculation: string;
+}> = ({ title, whatItIs, calculation }) => {
+  return (
+    <TooltipProvider delay={150}>
+      <UITooltip>
+        <TooltipTrigger>
+          <button
+            type="button"
+            className="inline-flex items-center text-muted-foreground/70 hover:text-teal-600 transition-colors p-0.5 rounded cursor-pointer"
+            aria-label={`Info: ${title}`}
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="left"
+          sideOffset={8}
+          className="w-[360px] sm:w-[400px] max-w-[90vw] p-3.5 bg-card border border-border text-foreground shadow-xl rounded-xl space-y-2.5 z-50 select-text leading-normal flow-root"
+        >
+          {/* 1. Header */}
+          <div className="px-3.5 py-2.5 bg-muted/40 dark:bg-muted/20 border-b border-border/70 flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 shrink-0">
+                <HelpCircle className="w-4 h-4" />
+              </div>
+              <span className="font-bold text-xs text-foreground truncate">
+                {title}
+              </span>
+            </div>
+            <span className="text-[9.5px] font-mono font-medium px-1.5 py-0.5 rounded bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border border-teal-500/30 shrink-0">
+              Metric Guide
+            </span>
+          </div>
+
+          <div className="p-3.5 space-y-3">
+            {/* 2. Content / Overview */}
+            <div className="space-y-1">
+              <span className="text-[9.5px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                <Info className="w-3 h-3 text-teal-600 dark:text-teal-400" />
+                Overview & Meaning
+              </span>
+              <p className="text-xs text-foreground/90 leading-relaxed pl-0.5">
+                {whatItIs}
+              </p>
+            </div>
+
+            {/* 3. Calculation Method */}
+            <div className="space-y-1.5">
+              <span className="text-[9.5px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1">
+                <Calculator className="w-3 h-3" />
+                Calculation Method
+              </span>
+              <div className="bg-muted/60 dark:bg-background/80 border border-border/80 rounded-lg p-2.5 text-[10.5px] font-mono leading-relaxed text-foreground shadow-2xs">
+                <p className="whitespace-pre-wrap break-words">{calculation}</p>
+              </div>
+            </div>
+          </div>
+        </TooltipContent>
+      </UITooltip>
+    </TooltipProvider>
+  );
+};
+
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   analytics,
   personas,
@@ -64,7 +146,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   onToggleExpand,
 }) => {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -72,6 +153,10 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     x: 0,
     y: 0,
   });
+
+  const [expandedDomains, setExpandedDomains] = useState<
+    Record<string, boolean>
+  >({});
 
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -133,6 +218,45 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     return vals.length > 0 ? Math.max(...vals, 1) : 1;
   }, [influenceScores]);
 
+  // Group policy citations by domain
+  const groupedCitations = useMemo(() => {
+    const citations = analytics?.citations || [];
+    const map = new Map<string, { count: number; urls: Set<string> }>();
+
+    citations.forEach((rawUrl) => {
+      try {
+        const urlObj = new URL(rawUrl);
+        const domain = urlObj.hostname.replace(/^www\./, "");
+        if (!map.has(domain)) {
+          map.set(domain, { count: 0, urls: new Set() });
+        }
+        const entry = map.get(domain)!;
+        entry.count += 1;
+        entry.urls.add(rawUrl);
+      } catch {
+        const fallbackDomain = "External Policy Documents";
+        if (!map.has(fallbackDomain)) {
+          map.set(fallbackDomain, { count: 0, urls: new Set() });
+        }
+        const entry = map.get(fallbackDomain)!;
+        entry.count += 1;
+        entry.urls.add(rawUrl);
+      }
+    });
+
+    return Array.from(map.entries())
+      .map(([domain, data]) => ({
+        domain,
+        count: data.count,
+        urls: Array.from(data.urls),
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [analytics?.citations]);
+
+  const toggleDomainExpand = (domain: string) => {
+    setExpandedDomains((prev) => ({ ...prev, [domain]: !prev[domain] }));
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     setIsDragging(true);
@@ -144,22 +268,17 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   };
   const handleMouseUp = () => setIsDragging(false);
 
-  const scrollToSection = (id: string) => {
-    const elem = document.getElementById(id);
-    elem?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
   const viewBoxWidth = isExpanded ? 480 : 330;
   const viewBoxHeight = isExpanded ? 290 : 240;
 
   return (
-    <aside className="relative flex flex-col h-full border-l border-border/70 bg-sidebar/50 text-sidebar-foreground select-none transition-all duration-300">
-      {/* Explicit Hand Pointer on Toggle Button */}
+    <aside className="relative z-30 flex flex-col h-full min-h-0 border-l border-border/70 bg-sidebar/50 text-sidebar-foreground transition-all duration-300">
+      {/* Expand/Collapse Handle */}
       {onToggleExpand && (
         <button
           onClick={onToggleExpand}
           style={{ cursor: "pointer" }}
-          className="group absolute top-1/2 -left-3.5 -translate-y-1/2 z-40 h-10 w-4 rounded-l-md bg-card border-y border-l border-border shadow-md hover:bg-teal-50 dark:hover:bg-teal-950/70 flex items-center justify-center cursor-pointer transition-all hover:w-5"
+          className="group absolute top-1/2 -left-3.5 -translate-y-1/2 z-50 h-10 w-4 rounded-l-md bg-card border-y border-l border-border shadow-md hover:bg-teal-50 dark:hover:bg-teal-950/70 flex items-center justify-center cursor-pointer transition-all hover:w-5"
           title={isExpanded ? "Collapse Panel" : "Expand to 42%"}
         >
           {isExpanded ? (
@@ -176,101 +295,39 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
         </button>
       )}
 
-      {/* Header & Quick Anchor Links */}
-      <div className="p-3 border-b border-border/60 bg-sidebar shrink-0 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5" />
-            Deliberation Analytics
-          </span>
-          <Badge
-            variant="outline"
-            className="text-[9px] font-mono border-teal-500/30 text-teal-700 dark:text-teal-300"
-          >
-            Live Metrics
-          </Badge>
-        </div>
-
-        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none pb-0.5">
-          {[
-            "overview",
-            "network",
-            "trajectory",
-            "consensus",
-            "influence",
-            "sources",
-          ].map((sec) => (
-            <button
-              key={sec}
-              onClick={() => scrollToSection(`sec-${sec}`)}
-              style={{ cursor: "pointer" }}
-              className="px-2 py-0.5 rounded text-[9px] font-medium bg-muted/60 hover:bg-teal-50 dark:hover:bg-teal-950/50 hover:text-teal-600 transition-colors shrink-0 cursor-pointer capitalize"
-            >
-              {sec}
-            </button>
-          ))}
-        </div>
+      {/* Clean Header without Tabs or Hyperlinks */}
+      <div className="p-3 border-b border-border/60 bg-sidebar shrink-0 flex items-center justify-between">
+        <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5" />
+          Deliberation Analytics
+        </span>
+        <Badge
+          variant="outline"
+          className="text-[9px] font-mono border-teal-500/30 text-teal-700 dark:text-teal-300"
+        >
+          Live Metrics
+        </Badge>
       </div>
 
-      {/* Unified Single-Page Analytics Feed */}
+      {/* Feed (Top KPI cards removed as requested) */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto p-3 space-y-3.5 scrollbar-thin"
+        className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3.5 scrollbar-thin"
       >
-        {/* 1. Overview KPIs */}
-        <div id="sec-overview" className="grid grid-cols-2 gap-2">
-          <Card className="p-2.5 bg-card border-border/80 shadow-2xs">
-            <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
-              <span className="flex items-center gap-1 font-semibold text-foreground">
-                <Scale className="w-3 h-3 text-teal-600 dark:text-teal-400" />
-                Consensus
-              </span>
-              {latestAgreement && (
-                <span className="font-mono text-[9px]">
-                  R{latestAgreement.round}
-                </span>
-              )}
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-lg font-bold font-mono text-teal-700 dark:text-teal-300">
-                {latestAgreement
-                  ? `${Math.round(latestAgreement.agreement_score * 100)}%`
-                  : "N/A"}
-              </span>
-              <span className="text-[10px] font-medium text-muted-foreground truncate">
-                {latestAgreement?.classification || "Evaluating..."}
-              </span>
-            </div>
-          </Card>
-
-          <Card className="p-2.5 bg-card border-border/80 shadow-2xs">
-            <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
-              <span className="flex items-center gap-1 font-semibold text-foreground">
-                <Award className="w-3 h-3 text-amber-500" />
-                Top Persuader
-              </span>
-              {topInfluencer && (
-                <span className="font-mono text-[9px] text-amber-600 dark:text-amber-400 font-bold">
-                  ★ {influenceScores[topInfluencer] || 0}
-                </span>
-              )}
-            </div>
-            <p className="text-xs font-bold text-foreground truncate">
-              {topInfluencer ? topInfluencer.split(" ")[0] : "None identified"}
-            </p>
-          </Card>
-        </div>
-
-        {/* 2. Influence Network Graph */}
-        <Card
-          id="sec-network"
-          className="p-3 bg-card border-border shadow-xs relative overflow-hidden"
-        >
+        {/* 1. Influence Network Graph with Corrected Arrow Geometry */}
+        <Card className="p-3 bg-card border-border shadow-xs relative overflow-hidden">
           <div className="flex items-center justify-between mb-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-              <GitGraph className="w-3.5 h-3.5" />
-              Influence Network ({graphNodes.length} Nodes)
-            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+                <GitGraph className="w-3.5 h-3.5" />
+                Influence Network ({graphNodes.length} Nodes)
+              </CardTitle>
+              <MetricInfoBadge
+                title="Opinion Dynamics Network"
+                whatItIs="Directed topological graph illustrating persuasion vectors between stakeholders."
+                calculation="Nodes show active stances [-5.0, +5.0]. Curved Bézier arrows represent directed persuasion; arrow thickness is proportional to accumulated persuasion points."
+              />
+            </div>
             <Badge
               variant="outline"
               className="text-[9px] border-teal-500/30 text-teal-700 dark:text-teal-300 font-mono"
@@ -293,7 +350,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                 variant="ghost"
                 size="sm"
                 onClick={() => setZoom((z) => Math.min(z + 0.2, 2.5))}
-                style={{ cursor: "pointer" }}
                 className="h-5 w-5 p-0 cursor-pointer"
               >
                 <ZoomIn className="w-3 h-3" />
@@ -302,7 +358,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                 variant="ghost"
                 size="sm"
                 onClick={() => setZoom((z) => Math.max(z - 0.2, 0.6))}
-                style={{ cursor: "pointer" }}
                 className="h-5 w-5 p-0 cursor-pointer"
               >
                 <ZoomOut className="w-3 h-3" />
@@ -314,7 +369,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   setZoom(1);
                   setPan({ x: 0, y: 0 });
                 }}
-                style={{ cursor: "pointer" }}
                 className="h-5 w-5 p-0 cursor-pointer"
               >
                 <RotateCcw className="w-3 h-3" />
@@ -327,22 +381,25 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               className="w-full h-full select-none"
             >
               <defs>
+                {/* Arrowhead marker: Tip is at x=9, y=5 */}
                 <marker
                   id="arrowhead"
-                  markerWidth="7"
-                  markerHeight="7"
-                  refX="17"
-                  refY="3.5"
+                  viewBox="0 0 10 10"
+                  refX="8"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
                   orient="auto"
                 >
-                  <polygon
-                    points="0 0, 7 3.5, 0 7"
+                  <path
+                    d="M 0 1.5 L 9 5 L 0 8.5 z"
                     className="fill-teal-600 dark:fill-teal-400"
                   />
                 </marker>
               </defs>
 
               <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+                {/* Directed Edges: Calculated to touch outer node boundary cleanly */}
                 {analytics?.edges?.map((edge, i) => {
                   const src = nodeMap.get(edge.source);
                   const tgt = nodeMap.get(edge.target);
@@ -350,8 +407,29 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
                   const dx = tgt.x - src.x;
                   const dy = tgt.y - src.y;
-                  const cx = (src.x + tgt.x) / 2 - dy * 0.18;
-                  const cy = (src.y + tgt.y) / 2 + dx * 0.18;
+
+                  // Curvature offset
+                  const curvature = 0.22;
+                  const cx = (src.x + tgt.x) / 2 - dy * curvature;
+                  const cy = (src.y + tgt.y) / 2 + dx * curvature;
+
+                  // Outer node circle radius = 17px
+                  const nodeRadius = 18;
+
+                  // Start point on source boundary
+                  const dSrcX = cx - src.x;
+                  const dSrcY = cy - src.y;
+                  const distSrc = Math.hypot(dSrcX, dSrcY) || 1;
+                  const startX = src.x + (dSrcX / distSrc) * nodeRadius;
+                  const startY = src.y + (dSrcY / distSrc) * nodeRadius;
+
+                  // End point on target boundary (arrow touches outer ring)
+                  const dTgtX = cx - tgt.x;
+                  const dTgtY = cy - tgt.y;
+                  const distTgt = Math.hypot(dTgtX, dTgtY) || 1;
+                  const endX = tgt.x + (dTgtX / distTgt) * (nodeRadius + 2);
+                  const endY = tgt.y + (dTgtY / distTgt) * (nodeRadius + 2);
+
                   const isHighlighted =
                     selectedAgent === edge.source ||
                     selectedAgent === edge.target;
@@ -361,7 +439,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   return (
                     <g key={`edge-${i}`}>
                       <path
-                        d={`M ${src.x} ${src.y} Q ${cx} ${cy} ${tgt.x} ${tgt.y}`}
+                        d={`M ${startX} ${startY} Q ${cx} ${cy} ${endX} ${endY}`}
                         fill="none"
                         stroke={
                           isHighlighted
@@ -372,22 +450,28 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                           isHighlighted ? 2.5 : Math.max(1.2, weight * 2.2)
                         }
                         markerEnd="url(#arrowhead)"
-                        className="text-teal-600/60 dark:text-teal-400/50 transition-colors"
+                        className="text-teal-600/65 dark:text-teal-400/55 transition-colors"
                       />
                     </g>
                   );
                 })}
 
+                {/* Nodes with Full Names on badges */}
                 {graphNodes.map((n) => {
                   const isSel = selectedAgent === n.name;
-                  const safeName = (n.name || n.id || "Agent").split(" ")[0];
+                  const fullName = n.name || n.id || "Agent";
+                  const stanceStr =
+                    n.currentStance > 0
+                      ? `+${n.currentStance.toFixed(1)}`
+                      : n.currentStance.toFixed(1);
+                  const labelText = `${fullName} (${stanceStr})`;
+                  const pillWidth = Math.max(80, labelText.length * 5.6 + 14);
 
                   return (
                     <g
                       key={n.id}
                       transform={`translate(${n.x}, ${n.y})`}
                       onClick={() => setSelectedAgent(isSel ? null : n.name)}
-                      style={{ cursor: "pointer" }}
                       className="cursor-pointer group"
                     >
                       {isSel && (
@@ -415,26 +499,24 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                         width="28"
                         clipPath={`url(#avatar-clip-${n.index})`}
                       />
+
+                      {/* Dynamic width badge showing the Full Name */}
                       <g transform="translate(0, 24)">
                         <rect
-                          x="-32"
-                          y="-6"
-                          width="64"
-                          height="12"
-                          rx="3"
-                          className="fill-card/95 stroke-border/80"
-                          strokeWidth="0.6"
+                          x={-pillWidth / 2}
+                          y="-7"
+                          width={pillWidth}
+                          height="14"
+                          rx="4"
+                          className="fill-card/95 stroke-border/80 shadow-xs"
+                          strokeWidth="0.8"
                         />
                         <text
                           textAnchor="middle"
                           dominantBaseline="middle"
-                          className="text-[7.5px] font-bold fill-foreground"
+                          className="text-[8px] font-bold fill-foreground"
                         >
-                          {safeName} (
-                          {n.currentStance > 0
-                            ? `+${n.currentStance.toFixed(1)}`
-                            : n.currentStance.toFixed(1)}
-                          )
+                          {labelText}
                         </text>
                       </g>
                     </g>
@@ -445,21 +527,25 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
             <div className="absolute bottom-1.5 left-2 text-[8.5px] text-muted-foreground flex items-center gap-1 font-mono pointer-events-none">
               <Move className="w-2.5 h-2.5 text-teal-600" />
-              <span>Drag to pan</span>
+              <span>Drag to pan • Scroll to zoom</span>
             </div>
           </div>
         </Card>
 
-        {/* 3. Smoothed Opinion Trajectory */}
-        <Card
-          id="sec-trajectory"
-          className="p-3 bg-card border-border shadow-xs"
-        >
+        {/* 2. Smoothed Opinion Trajectory (Connected Dots + Wide Tooltip) */}
+        <Card className="p-3 bg-card border-border shadow-xs">
           <CardHeader className="p-0 pb-2 flex-row items-center justify-between">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-              <Activity className="w-3.5 h-3.5" />
-              Smoothed Opinion Curves
-            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+                <Activity className="w-3.5 h-3.5" />
+                Smoothed Opinion Curves
+              </CardTitle>
+              <MetricInfoBadge
+                title="Opinion Drift Trajectories"
+                whatItIs="Tracks continuous stance drift [-5.0, +5.0] for every panelist across discussion rounds."
+                calculation="Each turn is graded via DeBERTa-v3 NLI continuous 2-way softmax. Stances are forward-filled across rounds to ensure continuous lines with visible markers."
+              />
+            </div>
             <span className="text-[9px] font-mono text-muted-foreground">
               Range: [-5.0, +5.0]
             </span>
@@ -491,7 +577,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                     strokeDasharray="2 2"
                     className="text-border"
                   />
-                  <Tooltip
+                  <RechartsTooltip
                     contentStyle={{
                       backgroundColor: "var(--card)",
                       borderColor: "var(--border)",
@@ -506,7 +592,14 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                       dataKey={p.name}
                       stroke={AGENT_COLORS[idx % AGENT_COLORS.length]}
                       strokeWidth={selectedAgent === p.name ? 3 : 1.8}
-                      dot={{ r: 2 }}
+                      connectNulls={true}
+                      dot={{
+                        r: 3.5,
+                        strokeWidth: 1.5,
+                        stroke: AGENT_COLORS[idx % AGENT_COLORS.length],
+                        fill: "var(--card)",
+                      }}
+                      activeDot={{ r: 5.5 }}
                     />
                   ))}
                 </LineChart>
@@ -515,16 +608,20 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </CardContent>
         </Card>
 
-        {/* 4. Consensus Dynamics */}
-        <Card
-          id="sec-consensus"
-          className="p-3 bg-card border-border shadow-xs"
-        >
+        {/* 3. Consensus Dynamics */}
+        <Card className="p-3 bg-card border-border shadow-xs">
           <div className="flex items-center justify-between mb-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-              <Scale className="w-3.5 h-3.5" />
-              Consensus Dynamics (Agreement Score)
-            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+                <Scale className="w-3.5 h-3.5" />
+                Consensus Dynamics (Agreement)
+              </CardTitle>
+              <MetricInfoBadge
+                title="Consensus Over Rounds"
+                whatItIs="Chronological agreement tracking whether the deliberation is converging toward consensus or polarizing over time."
+                calculation="Calculated per round across all active agents' most recent stances: 1.0 - (mean absolute pairwise diff / 10.0). Scores range from 0.0 (extreme polarization) to 1.0 (unanimous consensus)."
+              />
+            </div>
             {latestAgreement && (
               <Badge className="text-[9px] bg-teal-600 text-white font-mono px-1.5 py-0 h-4">
                 {latestAgreement.classification}
@@ -563,7 +660,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   fontSize={9}
                   tickLine={false}
                 />
-                <Tooltip
+                <RechartsTooltip
                   contentStyle={{
                     backgroundColor: "var(--card)",
                     borderColor: "var(--border)",
@@ -577,22 +674,27 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   stroke="#0d9488"
                   fill="url(#agreeGradient)"
                   strokeWidth={2}
+                  dot={{ r: 3, fill: "#0d9488" }}
                 />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </Card>
 
-        {/* 5. Influence Power Rankings */}
-        <Card
-          id="sec-influence"
-          className="p-3 bg-card border-border shadow-xs space-y-2.5"
-        >
+        {/* 4. Influence Power Rankings */}
+        <Card className="p-3 bg-card border-border shadow-xs space-y-2.5">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-              <Award className="w-3.5 h-3.5" />
-              Persuasion Power Rankings
-            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+                <Award className="w-3.5 h-3.5" />
+                Persuasion Power Rankings
+              </CardTitle>
+              <MetricInfoBadge
+                title="Persuasion Power Ranking"
+                whatItIs="Total outbound persuasion effect generated by each stakeholder across the debate."
+                calculation="Sum of outgoing edge weights from this agent in the influence matrix. Convergence only counts if the listener is permitted to hear the agent in the listening matrix."
+              />
+            </div>
             <span className="text-[9px] text-muted-foreground font-mono">
               Outgoing Weight
             </span>
@@ -611,10 +713,13 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               return (
                 <div key={pName} className="space-y-1">
                   <div className="flex items-center justify-between text-[10px]">
-                    <span className="font-semibold text-foreground flex items-center gap-1 truncate max-w-[170px]">
+                    <span
+                      className="font-semibold text-foreground flex items-center gap-1 truncate max-w-[200px]"
+                      title={pName}
+                    >
                       {pName}{" "}
                       {isLead && (
-                        <Award className="w-3 h-3 text-amber-500 inline" />
+                        <Award className="w-3 h-3 text-amber-500 inline shrink-0" />
                       )}
                     </span>
                     <span className="font-mono text-teal-700 dark:text-teal-400 font-bold">
@@ -633,13 +738,20 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </div>
         </Card>
 
-        {/* 6. Persuasion Signals Log */}
+        {/* 5. Persuasion Signals with Full Names */}
         <Card className="p-3 bg-card border-border shadow-xs space-y-2">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-              <TrendingUp className="w-3.5 h-3.5" />
-              Recorded Persuasion Signals
-            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+                <TrendingUp className="w-3.5 h-3.5" />
+                Persuasion Signals Log
+              </CardTitle>
+              <MetricInfoBadge
+                title="Persuasion Shift Signals"
+                whatItIs="Step-by-step record whenever a speaker successfully persuades or polarizes a listener."
+                calculation="Magnitude Δ = Current_Stance - Prior_Stance. Guidance scale γ = |Δ| * 0.05. Categorized as Convergence (moving closer) or Polarization (moving further away)."
+              />
+            </div>
             <span className="text-[9px] text-muted-foreground font-mono">
               CFG Shifts
             </span>
@@ -653,33 +765,38 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               </p>
             ) : (
               analytics.persuasion_signals
-                .slice(-4)
+                .slice(-5)
                 .reverse()
                 .map((sig) => {
-                  const src = String(sig.source || "Deliberation").split(
-                    " ",
-                  )[0];
-                  const tgt = String(sig.target || "Agent").split(" ")[0];
+                  // Display Full Names without truncation
+                  const src = String(sig.source || "Group Deliberation");
+                  const tgt = String(sig.target || "Panelist");
                   const shiftVal =
                     typeof sig.shift === "number" ? sig.shift : 0;
 
                   return (
                     <div
                       key={sig.id}
-                      className="p-2 rounded-md bg-muted/30 border border-border/60 text-xs flex items-center justify-between"
+                      className="p-2 rounded-md bg-muted/30 border border-border/60 text-xs flex items-center justify-between gap-2"
                     >
-                      <div className="flex items-center gap-1 truncate text-[11px]">
-                        <span className="text-muted-foreground truncate max-w-[70px]">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1 pr-1">
+                        <span
+                          className="text-muted-foreground font-medium text-[11px] truncate max-w-[120px]"
+                          title={src}
+                        >
                           {src}
                         </span>
-                        <ArrowRight className="w-2.5 h-2.5 text-teal-600 dark:text-teal-400 shrink-0" />
-                        <span className="font-semibold text-foreground truncate max-w-[70px]">
+                        <ArrowRight className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                        <span
+                          className="font-semibold text-foreground text-[11px] truncate max-w-[120px]"
+                          title={tgt}
+                        >
                           {tgt}
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[9px] text-muted-foreground truncate">
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[9px] text-muted-foreground truncate hidden sm:inline">
                           {sig.dynamic || "Shift"}
                         </span>
                         <Badge
@@ -702,34 +819,79 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </div>
         </Card>
 
-        {/* 7. Sources */}
-        <Card
-          id="sec-sources"
-          className="p-3 bg-card border-border shadow-xs space-y-2"
-        >
+        {/* 6. Grouped & Expandable Policy Citations */}
+        <Card className="p-3 bg-card border-border shadow-xs space-y-2">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-              <ExternalLink className="w-3.5 h-3.5" />
-              Retrieved Policy Citations
-            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+                <ExternalLink className="w-3.5 h-3.5" />
+                Policy Citations by Domain
+              </CardTitle>
+              <MetricInfoBadge
+                title="Grouped Policy Evidence"
+                whatItIs="External regulatory, legal, and empirical documentation cited by agents during deliberation."
+                calculation="Aggregated across turns, grouped by root domain, with citation frequency counts and interactive links."
+              />
+            </div>
             <Layers className="w-3 h-3 text-muted-foreground" />
           </div>
 
           <div className="space-y-1.5 text-xs">
-            {analytics?.citations && analytics.citations.length > 0 ? (
-              analytics.citations.map((url, i) => (
-                <a
-                  key={i}
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ cursor: "pointer" }}
-                  className="flex items-center gap-1.5 p-1.5 rounded bg-muted/40 hover:bg-teal-50/60 dark:hover:bg-teal-950/40 border border-border/50 text-teal-700 dark:text-teal-300 text-[11px] truncate transition-colors group cursor-pointer"
-                >
-                  <ExternalLink className="w-3 h-3 shrink-0 text-muted-foreground group-hover:text-teal-600" />
-                  <span className="truncate">{url}</span>
-                </a>
-              ))
+            {groupedCitations.length > 0 ? (
+              groupedCitations.map((grp) => {
+                const isDomainExpanded = Boolean(expandedDomains[grp.domain]);
+
+                return (
+                  <div
+                    key={grp.domain}
+                    className="rounded-md border border-border/60 bg-muted/20 overflow-hidden"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleDomainExpand(grp.domain)}
+                      className="w-full flex items-center justify-between p-2 hover:bg-muted/40 transition-colors text-left cursor-pointer"
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0 pr-1">
+                        <Globe className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                        <span className="font-semibold text-[11px] text-foreground truncate">
+                          {grp.domain}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <Badge
+                          variant="secondary"
+                          className="text-[9px] font-mono px-1.5 py-0 h-4"
+                        >
+                          {grp.count}{" "}
+                          {grp.count === 1 ? "citation" : "citations"}
+                        </Badge>
+                        {isDomainExpanded ? (
+                          <ChevronUp className="w-3 h-3 text-muted-foreground" />
+                        ) : (
+                          <ChevronDown className="w-3 h-3 text-muted-foreground" />
+                        )}
+                      </div>
+                    </button>
+
+                    {isDomainExpanded && (
+                      <div className="p-2 pt-0 space-y-1 border-t border-border/30 bg-muted/10">
+                        {grp.urls.map((url, idx) => (
+                          <a
+                            key={idx}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 p-1 rounded hover:bg-teal-50 dark:hover:bg-teal-950/40 text-[10.5px] text-teal-700 dark:text-teal-300 transition-colors group/item"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0 text-muted-foreground group-hover/item:text-teal-600" />
+                            <span className="truncate">{url}</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             ) : (
               <p className="text-[11px] text-muted-foreground italic py-2 text-center">
                 No policy documents cited yet in this session.

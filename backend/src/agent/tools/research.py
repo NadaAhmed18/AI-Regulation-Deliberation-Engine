@@ -1,22 +1,9 @@
 import os
-import threading
-import asyncio
 from typing import List, Optional
 from tavily import TavilyClient
 
 from src.agent.tools.retriever import search_ai_policy
-from src.rag.stages.scraper import ingest_batch
-from src.rag.stages.ingestion import ingest_documents
-
-
-def _background_ingest(url: str):
-    """Asynchronously ingests and embeds content in the background."""
-    try:
-        docs = asyncio.run(ingest_batch([url]))
-        if docs:
-            ingest_documents([docs[0]], on_conflict="ignore")
-    except Exception as e:
-        print(f"[Async Ingestion Error]: {e}")
+from src.tasks.ingestion_tasks import ingest_url_task
 
 
 def unified_policy_research(
@@ -69,10 +56,19 @@ def unified_policy_research(
         except Exception as e:
             output_sections.append(f"[Web search warning: {e}]")
 
-    # 4. Background Ingestion
+    # 4. Background Ingestion -- dispatched to the dedicated
+    # ingestion-worker container(s) via Celery/Redis, not run inline or
+    # on a thread inside this (backend/API) process. `.delay()` pushes
+    # the job and returns immediately; it does not wait for, or need,
+    # the ingestion-worker to be reachable synchronously.
     if auto_ingest_web and discovered_web_urls:
         top_url = discovered_web_urls[0]
-        threading.Thread(target=_background_ingest, args=(top_url,), daemon=True).start()
-        output_sections.append(f"*(Discovered source '{top_url}' queued for background indexing.)*")
+        try:
+            ingest_url_task.delay(top_url)
+            output_sections.append(f"*(Discovered source '{top_url}' queued for background indexing.)*")
+        except Exception as e:
+            # Broker unreachable, etc. -- research results still return
+            # to the agent either way; ingestion is best-effort.
+            output_sections.append(f"*(Could not queue '{top_url}' for indexing: {e})*")
 
     return "\n".join(output_sections) if output_sections else "No information found."

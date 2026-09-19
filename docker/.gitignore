@@ -1,0 +1,10 @@
+# Real secrets live here -- passwords, API keys for every service in
+# docker-compose.yaml. Only .env.example (the template, no real values)
+# should ever be committed.
+.env
+.env.*
+!.env.example
+
+# Anything a local postgres-init override might drop here for testing
+# shouldn't be committed either, if that pattern is ever used.
+postgres-init/*.local.sql

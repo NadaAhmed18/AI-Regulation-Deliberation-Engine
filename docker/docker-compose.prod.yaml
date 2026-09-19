@@ -1,0 +1,52 @@
+# Production overlay -- applied ON TOP of docker-compose.yaml, not a
+# replacement for it. Usage:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  neo4j:
+    ports: []
+    logging: *default-logging
+
+  postgres:
+    ports: []
+    logging: *default-logging
+
+  clickhouse:
+    ports: []
+    logging: *default-logging
+
+  redis:
+    ports: []
+    logging: *default-logging
+
+  minio:
+    ports: []
+    logging: *default-logging
+
+  minio-init:
+    logging: *default-logging
+
+  langfuse-web:
+    # Kept published deliberately -- you likely still want to reach the
+    # Langfuse dashboard directly. Put it behind a reverse proxy + auth
+    # if it shouldn't be public (see the production checklist).
+    logging: *default-logging
+
+  langfuse-worker:
+    logging: *default-logging
+
+  backend:
+    logging: *default-logging
+
+  frontend:
+    logging: *default-logging
+
+  ingestion-worker:
+    logging: *default-logging

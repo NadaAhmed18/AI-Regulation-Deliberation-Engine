@@ -31,6 +31,7 @@ dependencies = [
     "transformers>=4.40.0",
     "optimum-onnx[onnxruntime]>=0.1.0",
     "onnxruntime>=1.29.0",
+    "celery[redis]>=5.4.0",
 ]
 
 [project.scripts]

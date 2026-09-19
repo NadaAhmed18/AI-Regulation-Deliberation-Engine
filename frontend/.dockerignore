@@ -1,0 +1,27 @@
+# Secrets -- NEXT_PUBLIC_* values are meant to be public (baked into
+# the JS bundle on purpose), but any server-only secrets in .env.local
+# should never enter the build context.
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Dependencies / build output -- reinstalled and rebuilt fresh inside
+# the Docker build anyway; copying them in wastes time and can cause
+# platform-mismatch issues (e.g. macOS-built native modules failing
+# inside a Linux container).
+node_modules/
+.next/
+out/
+
+# VCS
+.git/
+.gitignore
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+
+Dockerfile
+.dockerignore

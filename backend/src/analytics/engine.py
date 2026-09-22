@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from src.analytics.agreement import compute_round_agreement
+from src.analytics.findings import generate_key_findings
 from src.analytics.influence import compute_topology_influence
 from src.analytics.network_model import OpinionDynamicsNetwork
 from src.analytics.opinion_change import compute_opinion_trajectories
@@ -38,6 +39,12 @@ class DiscussionAnalyticsEngine:
 
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE simulation_analytics
+                ADD COLUMN IF NOT EXISTS key_findings JSONB
                 """
             )
 
@@ -78,38 +85,42 @@ class DiscussionAnalyticsEngine:
         agreement: List[Dict[str, Any]],
         influence: Dict[str, Any],
         network_graph: Dict[str, Any],
+        key_findings: List[Dict[str, Any]],
     ) -> None:
         """Insert or update computed analytics."""
 
         with self.controller._get_cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO simulation_analytics (
-                    simulation_id,
-                    opinion_change,
-                    agreement,
-                    influence,
-                    network_graph,
-                    updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+    """
+    INSERT INTO simulation_analytics (
+        simulation_id,
+        opinion_change,
+        agreement,
+        influence,
+        network_graph,
+        key_findings,
+        updated_at
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
 
-                ON CONFLICT (simulation_id)
-                DO UPDATE SET
-                    opinion_change = EXCLUDED.opinion_change,
-                    agreement = EXCLUDED.agreement,
-                    influence = EXCLUDED.influence,
-                    network_graph = EXCLUDED.network_graph,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    simulation_id,
-                    json.dumps(opinion_change),
-                    json.dumps(agreement),
-                    json.dumps(influence),
-                    json.dumps(network_graph),
-                ),
-            )
+    ON CONFLICT (simulation_id)
+    DO UPDATE SET
+        opinion_change = EXCLUDED.opinion_change,
+        agreement = EXCLUDED.agreement,
+        influence = EXCLUDED.influence,
+        network_graph = EXCLUDED.network_graph,
+        key_findings = EXCLUDED.key_findings,
+        updated_at = CURRENT_TIMESTAMP
+    """,
+    (
+        simulation_id,
+        json.dumps(opinion_change),
+        json.dumps(agreement),
+        json.dumps(influence),
+        json.dumps(network_graph),
+        json.dumps(key_findings),
+    ),
+)
 
     def get_cached_analytics(
         self,
@@ -126,6 +137,7 @@ class DiscussionAnalyticsEngine:
                     agreement,
                     influence,
                     network_graph,
+                    key_findings,
                     updated_at
                 FROM simulation_analytics
                 WHERE simulation_id = %s
@@ -190,13 +202,17 @@ class DiscussionAnalyticsEngine:
         )
 
         network_graph = network.export_graph_data()
-
+        key_findings = generate_key_findings(
+             trajectories=opinion_change,
+             influence_result=influence,
+)
         self._save_to_cache(
             simulation_id=simulation_id,
             opinion_change=opinion_change,
             agreement=agreement,
             influence=influence,
             network_graph=network_graph,
+            key_findings=key_findings,
         )
 
         return {
@@ -206,4 +222,5 @@ class DiscussionAnalyticsEngine:
             "agreement": agreement,
             "influence": influence,
             "network_graph": network_graph,
+            "key_findings": key_findings,
         }

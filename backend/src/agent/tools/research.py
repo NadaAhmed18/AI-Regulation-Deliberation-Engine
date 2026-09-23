@@ -1,31 +1,9 @@
 import os
-import logging
-import asyncio
 from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor
 from tavily import TavilyClient
 
 from src.agent.tools.retriever import search_ai_policy
-from src.rag.stages.scraper import ingest_batch
-from src.rag.stages.ingestion import ingest_documents
-
-logger = logging.getLogger("uvicorn")
-
-_ingest_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="neo4j_ingest_worker")
-
-
-def _background_ingest(url: str):
-    """Asynchronously ingests and embeds content in the background into Neo4j."""
-    logger.info(f"[Background Ingest Started]: Indexing '{url}' into Neo4j...")
-    try:
-        docs = asyncio.run(ingest_batch([url]))
-        if docs:
-            ingest_documents([docs[0]], on_conflict="ignore")
-            logger.info(f"[Background Ingest Success]: Finished indexing '{url}' into Neo4j.")
-        else:
-            logger.warning(f"[Background Ingest]: No docs extracted from '{url}'.")
-    except Exception as e:
-        logger.error(f"[Async Ingestion Error for {url}]: {e}", exc_info=True)
+from src.tasks.ingestion_tasks import ingest_url_task
 
 
 def unified_policy_research(
@@ -74,16 +52,23 @@ def unified_policy_research(
                         url = r.get("url", "")
                         if url:
                             discovered_web_urls.append(url)
-                        output_sections.append(
-                            f"- Source {i}: {r.get('title')}\n  URL: {url}\n  Snippet: {r.get('content')}\n"
-                        )
+                        output_sections.append(f"- Source {i}: {r.get('title')}\n  URL: {url}\n  Snippet: {r.get('content')}\n")
         except Exception as e:
             output_sections.append(f"[Web search warning: {e}]")
 
-    # 4. Background Ingestion 
+    # 4. Background Ingestion -- dispatched to the dedicated
+    # ingestion-worker container(s) via Celery/Redis, not run inline or
+    # on a thread inside this (backend/API) process. `.delay()` pushes
+    # the job and returns immediately; it does not wait for, or need,
+    # the ingestion-worker to be reachable synchronously.
     if auto_ingest_web and discovered_web_urls:
         top_url = discovered_web_urls[0]
-        _ingest_pool.submit(_background_ingest, top_url)
-        output_sections.append(f"*(Discovered source '{top_url}' queued for background indexing.)*")
+        try:
+            ingest_url_task.delay(top_url)
+            output_sections.append(f"*(Discovered source '{top_url}' queued for background indexing.)*")
+        except Exception as e:
+            # Broker unreachable, etc. -- research results still return
+            # to the agent either way; ingestion is best-effort.
+            output_sections.append(f"*(Could not queue '{top_url}' for indexing: {e})*")
 
     return "\n".join(output_sections) if output_sections else "No information found."

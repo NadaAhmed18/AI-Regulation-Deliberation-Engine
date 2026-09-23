@@ -16,7 +16,7 @@ dependencies = [
     "langgraph>=1.2.11",
     "neo4j>=6.2.0",
     "openai>=3.3.1",
-    "psycopg2>=2.9.12",
+    "psycopg2-binary>=2.9.12",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
@@ -31,14 +31,23 @@ dependencies = [
     "transformers>=4.40.0",
     "optimum-onnx[onnxruntime]>=0.1.0",
     "onnxruntime>=1.29.0",
+    "celery[redis]>=5.4.0",
 ]
-
+ 
 [project.scripts]
 backend = "backend:main"
-
+ 
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
-
+ 
 [tool.uv]
 package = false
+ 
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+ 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

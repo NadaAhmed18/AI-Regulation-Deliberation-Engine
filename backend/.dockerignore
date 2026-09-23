@@ -1,0 +1,35 @@
+# Secrets -- the single most important line in this file. Without it,
+# `COPY . .` in Dockerfile would bake backend/.env (real API keys) into
+# an image layer, retrievable later via `docker history` or by anyone
+# who pulls the image.
+.env
+.env.*
+!.env.example
+
+# Virtual environments / caches -- large, irrelevant to the image, and
+# rebuilt fresh by `uv sync` inside the Dockerfile anyway.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VCS
+.git/
+.gitignore
+
+# Local data / logs that shouldn't ship in an image
+data/
+*.log
+*.rdb
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+
+# Docker itself -- no reason for the backend build context to include
+# docker-compose files or other services' Dockerfiles
+Dockerfile
+.dockerignore

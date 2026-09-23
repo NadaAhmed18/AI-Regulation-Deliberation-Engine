@@ -1,0 +1,67 @@
+# Production overlay -- applied ON TOP of docker-compose.yaml, not a
+# replacement for it. Usage:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+#
+# What this changes vs. the base file:
+#   1. Removes host-port publishing for every internal-only service
+#      (postgres, neo4j, redis, clickhouse, minio) -- they stay reachable
+#      on the internal Docker network (which `backend`/`ingestion-worker`
+#      use), but are no longer reachable from outside the host at all.
+#      `backend` and `frontend` (the two services meant to be public)
+#      keep their published ports.
+#   2. Adds log rotation limits to every service -- the base file has
+#      none, so Docker's default json-file log driver would otherwise
+#      grow unbounded on a long-running production host.
+#
+# The base docker-compose.yaml stays exactly as-is for local
+# development, where publishing DB ports to localhost (for connecting a
+# DB client from your own machine) is a convenience worth keeping.
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  neo4j:
+    ports: !reset []
+    logging: *default-logging
+
+  postgres:
+    ports: !reset []
+    logging: *default-logging
+
+  clickhouse:
+    ports: !reset []
+    logging: *default-logging
+
+  redis:
+    ports: !reset []
+    logging: *default-logging
+
+  minio:
+    ports: !reset []
+    logging: *default-logging
+
+  minio-init:
+    logging: *default-logging
+
+  langfuse-web:
+    # Kept published deliberately -- you likely still want to reach the
+    # Langfuse dashboard directly. Put it behind a reverse proxy + auth
+    # if it shouldn't be public (see the production checklist).
+    logging: *default-logging
+
+  langfuse-worker:
+    logging: *default-logging
+
+  backend:
+    logging: *default-logging
+
+  frontend:
+    logging: *default-logging
+
+  ingestion-worker:
+    logging: *default-logging

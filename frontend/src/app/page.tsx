@@ -32,7 +32,7 @@ export default function Home() {
   // History sync trigger for Sidebar
   const [historyRefreshKey, setHistoryRefreshKey] = useState<number>(0);
 
-  // 1 SINGLE ENDPOINT: Retrieves topic, personas, turns, and analytics at once
+  // Load complete debate session in a single call
   const handleSelectSimulation = async (id: string) => {
     setIsRunning(false);
     setErrorMessage(null);
@@ -171,7 +171,6 @@ export default function Home() {
 
     try {
       for (let i = 0; i < stepsCount; i++) {
-        // Pass intervention only on the first stepped turn
         const activeIntervention = i === 0 ? intervention : undefined;
         await runStreamingTurn(simulationId, activeIntervention);
       }
@@ -222,6 +221,7 @@ export default function Home() {
         analytics={analytics}
         turns={turns}
         personas={personas}
+        topic={topic}
         isExpanded={isAnalyticsExpanded}
         onToggleExpand={() => setIsAnalyticsExpanded((v) => !v)}
       />

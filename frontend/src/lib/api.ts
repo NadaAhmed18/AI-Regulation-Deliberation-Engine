@@ -152,8 +152,15 @@ export const SimulationAPI = {
                 nodes: [],
                 edges: [],
                 trajectory: [],
+                agreement: [],
+                topological_agreement: {
+                    matrix: {},
+                    agent_scores: {},
+                    network_agreement: 1.0,
+                },
                 persuasion_signals: [],
                 citations: [],
+                key_findings: [],
             };
         }
         const params = roundNumber !== undefined ? { round_number: roundNumber } : {};

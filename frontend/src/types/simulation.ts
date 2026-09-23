@@ -78,11 +78,35 @@ export interface TopologyInfluence {
     top_influencer: string | null;
 }
 
+export interface TopologicalPairAgreement {
+    distance: number | null;
+    agreement: number | null;
+    is_visible: boolean;
+}
+
+export interface TopologicalAgreement {
+    matrix: Record<string, Record<string, TopologicalPairAgreement>>;
+    agent_scores: Record<string, number | null>;
+    network_agreement: number;
+}
+
+export interface KeyFinding {
+    id: string;
+    statement: string;
+    heat: number;
+    status: "confirmed" | "candidate" | string;
+    supporting_agents: string[];
+    opposing_agents: string[];
+    first_round: number;
+    last_round: number;
+}
+
 export interface SimulationAnalytics {
     nodes: GraphNodeData[];
     edges: GraphEdgeData[];
     trajectory: Array<Record<string, number | string>>;
     agreement?: RoundAgreement[];
+    topological_agreement?: TopologicalAgreement;
     influence?: TopologyInfluence;
     persuasion_signals: Array<{
         id: string;
@@ -94,6 +118,7 @@ export interface SimulationAnalytics {
         reasoning?: string;
     }>;
     citations: string[];
+    key_findings?: KeyFinding[];
     is_replay?: boolean;
     current_round?: number | null;
 }

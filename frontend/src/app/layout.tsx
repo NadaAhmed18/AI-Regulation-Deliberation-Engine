@@ -1,14 +1,41 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const inter = Inter({ subsets: ["latin"] });
+const sansFont = Inter({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const monoFont = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "AI Regulation — Multi-Agent Deliberation Engine",
+  title: "Qubeterra — AI Regulation Deliberation Engine",
   description:
-    "Autonomous multi-agent debate with live RAG and opinion dynamics",
+    "Autonomous multi-agent policy debate with real-time vector retrieval, topological consensus modeling, and opinion drift analytics.",
+  keywords: [
+    "AI Regulation",
+    "Multi-Agent Debate",
+    "Opinion Dynamics",
+    "Autonomous Deliberation",
+    "Graph Analytics",
+  ],
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f8fafb" },
+    { media: "(prefers-color-scheme: dark)", color: "#0d1518" },
+  ],
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -17,13 +44,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${sansFont.variable} ${monoFont.variable}`}
+    >
       <head>
         <script
           dangerouslySetInnerHTML={{
             __html: `
               try {
-                if (localStorage.getItem('theme') === 'dark') {
+                const stored = localStorage.getItem('theme');
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                if (stored === 'dark' || (!stored && prefersDark)) {
                   document.documentElement.classList.add('dark');
                 } else {
                   document.documentElement.classList.remove('dark');
@@ -35,9 +68,9 @@ export default function RootLayout({
       </head>
       <body
         suppressHydrationWarning
-        className={`${inter.className} bg-background text-foreground antialiased selection:bg-teal-500/20`}
+        className="font-sans bg-background text-foreground antialiased selection:bg-teal-500/25 selection:text-teal-900 dark:selection:text-teal-100 overflow-hidden"
       >
-        <TooltipProvider delay={200}>{children}</TooltipProvider>
+        <TooltipProvider delay={150}>{children}</TooltipProvider>
       </body>
     </html>
   );

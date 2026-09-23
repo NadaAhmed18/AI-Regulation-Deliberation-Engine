@@ -43,6 +43,10 @@ import {
   Globe,
   Calculator,
   Info,
+  Flame,
+  CheckCircle2,
+  XCircle,
+  Download,
 } from "lucide-react";
 import {
   DiscussionTurn,
@@ -55,6 +59,7 @@ interface AnalyticsDashboardProps {
   analytics: SimulationAnalytics | null;
   turns: DiscussionTurn[];
   personas: Persona[];
+  topic?: string;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
 }
@@ -70,8 +75,8 @@ const AGENT_COLORS = [
 ];
 
 /**
- * Clean, uncompressed explanation mark with comfortable width (360px-400px)
- * preventing cramped 5-line text wrapping.
+ * Metric explanation mark: styled directly on TooltipTrigger to prevent <button> nesting
+ * and positioned on the far right of card headers.
  */
 const MetricInfoBadge: React.FC<{
   title: string;
@@ -81,21 +86,17 @@ const MetricInfoBadge: React.FC<{
   return (
     <TooltipProvider delay={150}>
       <UITooltip>
-        <TooltipTrigger>
-          <button
-            type="button"
-            className="inline-flex items-center text-muted-foreground/70 hover:text-teal-600 transition-colors p-0.5 rounded cursor-pointer"
-            aria-label={`Info: ${title}`}
-          >
-            <HelpCircle className="w-3.5 h-3.5" />
-          </button>
+        <TooltipTrigger
+          className="inline-flex items-center justify-center text-muted-foreground/70 hover:text-teal-600 transition-colors p-1 rounded-md hover:bg-muted/50 cursor-pointer shrink-0"
+          aria-label={`Info: ${title}`}
+        >
+          <HelpCircle className="w-3.5 h-3.5" />
         </TooltipTrigger>
         <TooltipContent
           side="left"
           sideOffset={8}
           className="w-[360px] sm:w-[400px] max-w-[90vw] p-3.5 bg-card border border-border text-foreground shadow-xl rounded-xl space-y-2.5 z-50 select-text leading-normal flow-root"
         >
-          {/* 1. Header */}
           <div className="px-3.5 py-2.5 bg-muted/40 dark:bg-muted/20 border-b border-border/70 flex items-center justify-between">
             <div className="flex items-center gap-2 min-w-0">
               <div className="p-1 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 shrink-0">
@@ -111,7 +112,6 @@ const MetricInfoBadge: React.FC<{
           </div>
 
           <div className="p-3.5 space-y-3">
-            {/* 2. Content / Overview */}
             <div className="space-y-1">
               <span className="text-[9.5px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
                 <Info className="w-3 h-3 text-teal-600 dark:text-teal-400" />
@@ -122,7 +122,6 @@ const MetricInfoBadge: React.FC<{
               </p>
             </div>
 
-            {/* 3. Calculation Method */}
             <div className="space-y-1.5">
               <span className="text-[9.5px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1">
                 <Calculator className="w-3 h-3" />
@@ -141,7 +140,9 @@ const MetricInfoBadge: React.FC<{
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   analytics,
+  turns,
   personas,
+  topic,
   isExpanded = false,
   onToggleExpand,
 }) => {
@@ -161,8 +162,44 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
+  const viewBoxWidth = isExpanded ? 480 : 330;
+  const viewBoxHeight = isExpanded ? 310 : 255;
+
+  // Extract pairwise agreement score [0.0, 1.0] between any two agents
+  const getPairwiseAgreement = useMemo(() => {
+    return (agentA: string, agentB: string): number => {
+      const topoMatrix = analytics?.topological_agreement?.matrix;
+      if (topoMatrix) {
+        const scoreAB = topoMatrix[agentA]?.[agentB]?.agreement;
+        const scoreBA = topoMatrix[agentB]?.[agentA]?.agreement;
+        if (typeof scoreAB === "number") return scoreAB;
+        if (typeof scoreBA === "number") return scoreBA;
+      }
+      // Direct stance proximity fallback
+      const nodeA = analytics?.nodes?.find(
+        (n) => n.name === agentA || n.id === agentA,
+      );
+      const nodeB = analytics?.nodes?.find(
+        (n) => n.name === agentB || n.id === agentB,
+      );
+      if (
+        nodeA &&
+        nodeB &&
+        typeof nodeA.currentStance === "number" &&
+        typeof nodeB.currentStance === "number"
+      ) {
+        const diff = Math.abs(nodeA.currentStance - nodeB.currentStance);
+        return Math.max(0, Math.min(1, 1 - diff / 10));
+      }
+      return 0.5;
+    };
+  }, [analytics]);
+
+  // =========================================================================
+  // AGREEMENT-DRIVEN POSITIONING (Distance proportional to agreement)
+  // =========================================================================
   const graphNodes = useMemo(() => {
-    const list = analytics?.nodes?.length
+    const rawList = analytics?.nodes?.length
       ? analytics.nodes
       : personas.map((p, idx) => ({
           id: p.name || `agent-${idx}`,
@@ -172,30 +209,101 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           role: p.background,
         }));
 
-    const total = list.length || 1;
-    const centerX = isExpanded ? 240 : 165;
-    const centerY = isExpanded ? 145 : 120;
-    const radius = isExpanded ? (total >= 4 ? 110 : 95) : total >= 4 ? 80 : 70;
+    const total = rawList.length || 1;
+    const centerX = viewBoxWidth / 2;
+    const centerY = viewBoxHeight / 2 - 2;
 
-    return list.map((node, idx) => {
+    // Seed positions along an alignment axis based on stance to break rigid polygons
+    const positions = rawList.map((node, idx) => {
       const rawName = node.name || node.id || `Agent ${idx + 1}`;
       const name = String(rawName);
-      const angle = -Math.PI / 2 + (2 * Math.PI * idx) / total;
+      const stance =
+        typeof node.currentStance === "number" ? node.currentStance : 0;
+
+      // Proponents spread to the right, opponents to the left, staggered vertically
+      const normStance = stance / 5.0; // [-1.0, 1.0]
+      const spreadX = isExpanded ? 130 : 95;
+      const spreadY = isExpanded ? 85 : 65;
+      const verticalOffset =
+        (idx % 2 === 0 ? 1 : -1) * (0.4 + 0.3 * (idx / total)) * spreadY;
 
       return {
-        ...node,
         id: String(node.id || name),
         name,
         avatarUrl: node.avatarUrl || getAvatarPath(idx),
-        currentStance:
-          typeof node.currentStance === "number" ? node.currentStance : 0,
+        currentStance: stance,
         index: idx,
-        x: centerX + radius * Math.cos(angle),
-        y: centerY + radius * Math.sin(angle),
+        x: centerX + normStance * spreadX + (idx % 2 === 0 ? 12 : -12),
+        y: centerY + verticalOffset,
         color: AGENT_COLORS[idx % AGENT_COLORS.length],
       };
     });
-  }, [analytics, personas, isExpanded]);
+
+    // Distance bounds:
+    // High agreement (0.9) -> targets ~80px (close neighbors with overlapping green circles)
+    // Low agreement (0.1) -> targets ~190px (far apart across the canvas)
+    const minDist = isExpanded ? 84 : 76;
+    const maxDist = isExpanded ? 205 : 160;
+
+    // 40 spring relaxation iterations to converge on true agreement-distance representation
+    for (let step = 0; step < 40; step++) {
+      for (let i = 0; i < positions.length; i++) {
+        for (let j = i + 1; j < positions.length; j++) {
+          const a = positions[i];
+          const b = positions[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const curDist = Math.hypot(dx, dy) || 1;
+
+          const agreement = getPairwiseAgreement(a.name, b.name);
+          const targetDist = minDist + (1.0 - agreement) * (maxDist - minDist);
+
+          // Spring force towards target distance
+          const delta = (curDist - targetDist) / curDist;
+          const force = delta * 0.16;
+
+          a.x += dx * force;
+          a.y += dy * force;
+          b.x -= dx * force;
+          b.y -= dy * force;
+
+          // Hard anti-collision limit so avatar cards never overlap
+          if (curDist < minDist) {
+            const push = ((minDist - curDist) / curDist) * 0.45;
+            a.x -= dx * push;
+            a.y -= dy * push;
+            b.x += dx * push;
+            b.y += dy * push;
+          }
+        }
+
+        // Center gravity
+        positions[i].x += (centerX - positions[i].x) * 0.025;
+        positions[i].y += (centerY - positions[i].y) * 0.025;
+
+        // Viewport padding
+        const padX = 48;
+        const padY = 34;
+        positions[i].x = Math.max(
+          padX,
+          Math.min(viewBoxWidth - padX, positions[i].x),
+        );
+        positions[i].y = Math.max(
+          padY,
+          Math.min(viewBoxHeight - padY, positions[i].y),
+        );
+      }
+    }
+
+    return positions;
+  }, [
+    analytics,
+    personas,
+    isExpanded,
+    viewBoxWidth,
+    viewBoxHeight,
+    getPairwiseAgreement,
+  ]);
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, (typeof graphNodes)[0]>();
@@ -206,6 +314,29 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     return map;
   }, [graphNodes]);
 
+  // Determine individual green circular aura visibility
+  const agentAgreementStatus = useMemo(() => {
+    const statusMap = new Map<
+      string,
+      { hasHighAgreement: boolean; maxScore: number }
+    >();
+    graphNodes.forEach((a) => {
+      let maxScore = 0;
+      graphNodes.forEach((b) => {
+        if (a.name !== b.name) {
+          const score = getPairwiseAgreement(a.name, b.name);
+          if (score > maxScore) maxScore = score;
+        }
+      });
+      // Green circle ONLY appears if agreement is legitimately high (>= 0.72)
+      statusMap.set(a.name, {
+        hasHighAgreement: maxScore >= 0.72,
+        maxScore,
+      });
+    });
+    return statusMap;
+  }, [graphNodes, getPairwiseAgreement]);
+
   const latestAgreement = useMemo(() => {
     if (!analytics?.agreement || analytics.agreement.length === 0) return null;
     return analytics.agreement[analytics.agreement.length - 1];
@@ -214,14 +345,14 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   const topInfluencer = analytics?.influence?.top_influencer || null;
   const influenceScores = useMemo(
     () => analytics?.influence?.scores || {},
-    [analytics]
+    [analytics],
   );
   const maxInfluenceScore = useMemo(() => {
     const vals = Object.values(influenceScores);
     return vals.length > 0 ? Math.max(...vals, 1) : 1;
   }, [influenceScores]);
 
-  // Group policy citations by domain
+  // Group citations by domain
   const groupedCitations = useMemo(() => {
     const citations = analytics?.citations || [];
     const map = new Map<string, { count: number; urls: Set<string> }>();
@@ -260,6 +391,95 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     setExpandedDomains((prev) => ({ ...prev, [domain]: !prev[domain] }));
   };
 
+  // =========================================================================
+  // DOWNLOAD DELIBERATION REPORT
+  // =========================================================================
+  const handleDownloadReport = () => {
+    const reportTopic =
+      topic ||
+      (analytics as unknown as { topic?: string })?.topic ||
+      "AI Deliberation Session";
+    const dateStr = new Date().toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    const consensusScore = latestAgreement
+      ? Math.round(latestAgreement.agreement_score * 100)
+      : 0;
+    const consensusClass = latestAgreement
+      ? latestAgreement.classification
+      : "Unknown";
+
+    let md = `# Deliberation Report: ${reportTopic}\n\n`;
+    md += `**Date:** ${dateStr}  \n`;
+    md += `**Total Recorded Turns:** ${turns.length}  \n`;
+    md += `**Participating Panelists:** ${personas.length}  \n`;
+    md += `**Network Consensus Index:** ${consensusScore}% (${consensusClass})  \n\n`;
+
+    md += `---\n\n## 1. Stakeholder Panel & Final Stances\n\n`;
+    personas.forEach((p) => {
+      const node = graphNodes.find((n) => n.name === p.name);
+      const stance = node
+        ? node.currentStance > 0
+          ? `+${node.currentStance.toFixed(2)}`
+          : node.currentStance.toFixed(2)
+        : "0.00";
+      md += `### ${p.name}\n`;
+      md += `- **Background:** ${p.background}\n`;
+      md += `- **Tone:** ${p.tone}\n`;
+      md += `- **Final Graded Stance:** \`${stance}\`\n`;
+      md += `- **Persuasion Influence Score:** \`${(influenceScores[p.name] || 0).toFixed(2)}\`\n\n`;
+    });
+
+    if (analytics?.key_findings && analytics.key_findings.length > 0) {
+      md += `## 2. Distilled Key Findings (TASA Consensus Engine)\n\n`;
+      analytics.key_findings.forEach((kf, idx) => {
+        md += `${idx + 1}. **"${kf.statement}"**\n`;
+        md += `   - **Deliberation Heat:** ${kf.heat} turns (Rounds ${kf.first_round}-${kf.last_round})\n`;
+        md += `   - **Supporting Panelists:** ${kf.supporting_agents?.join(", ") || "None"}\n`;
+        md += `   - **Opposing Panelists:** ${kf.opposing_agents?.join(", ") || "None"}\n\n`;
+      });
+    }
+
+    if (
+      analytics?.persuasion_signals &&
+      analytics.persuasion_signals.length > 0
+    ) {
+      md += `## 3. Notable Persuasion & Polarization Shifts\n\n`;
+      analytics.persuasion_signals.forEach((sig) => {
+        const sign =
+          sig.shift > 0 ? `+${sig.shift.toFixed(2)}` : sig.shift.toFixed(2);
+        md += `- **Round ${sig.id?.split("_")[0] || "•"}:** ${sig.source} influenced **${sig.target}** (Δ ${sign}, Dynamic: ${sig.dynamic})\n`;
+      });
+      md += `\n`;
+    }
+
+    if (groupedCitations.length > 0) {
+      md += `## 4. Regulatory & Empirical Citations Bibliography\n\n`;
+      groupedCitations.forEach((grp) => {
+        md += `### ${grp.domain} (${grp.count} citation${grp.count === 1 ? "" : "s"})\n`;
+        grp.urls.forEach((u) => {
+          md += `- <${u}>\n`;
+        });
+        md += `\n`;
+      });
+    }
+
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `deliberation-report-${Date.now()}.md`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     setIsDragging(true);
@@ -271,12 +491,9 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   };
   const handleMouseUp = () => setIsDragging(false);
 
-  const viewBoxWidth = isExpanded ? 480 : 330;
-  const viewBoxHeight = isExpanded ? 290 : 240;
-
   return (
     <aside className="relative z-30 flex flex-col h-full min-h-0 border-l border-border/70 bg-sidebar/50 text-sidebar-foreground transition-all duration-300">
-      {/* Expand/Collapse Handle */}
+      {/* Expand/Collapse Toggle Button */}
       {onToggleExpand && (
         <button
           onClick={onToggleExpand}
@@ -298,45 +515,72 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
         </button>
       )}
 
-      {/* Clean Header without Tabs or Hyperlinks */}
-      <div className="p-3 border-b border-border/60 bg-sidebar shrink-0 flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5" />
-          Deliberation Analytics
-        </span>
-        <Badge
-          variant="outline"
-          className="text-[9px] font-mono border-teal-500/30 text-teal-700 dark:text-teal-300"
-        >
-          Live Metrics
-        </Badge>
+      {/* Header */}
+      <div className="p-3 border-b border-border/60 bg-sidebar shrink-0 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <div className="p-1 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 shrink-0">
+            <Sparkles className="w-3.5 h-3.5" />
+          </div>
+          <span className="text-xs font-bold uppercase tracking-wider text-teal-800 dark:text-teal-300 truncate">
+            Deliberation Analytics
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleDownloadReport}
+            className="h-6 px-2 text-[10px] font-semibold border-teal-500/30 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/60 cursor-pointer"
+            title="Download full deliberation analysis report"
+          >
+            <Download className="w-3 h-3 mr-1" />
+            Report
+          </Button>
+          {isExpanded && latestAgreement && (
+            <Badge
+              variant="outline"
+              className="text-[9px] font-mono border-teal-500/40 text-teal-700 dark:text-teal-300 bg-teal-50/50 dark:bg-teal-950/40"
+            >
+              Consensus: {Math.round(latestAgreement.agreement_score * 100)}%
+            </Badge>
+          )}
+        </div>
       </div>
 
-      {/* Feed (Top KPI cards removed as requested) */}
+      {/* Main Analytics Feed */}
       <div
         ref={containerRef}
         className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3.5 scrollbar-thin"
       >
-        {/* 1. Influence Network Graph with Corrected Arrow Geometry */}
+        {/* ===================================================================
+            1. INFLUENCE NETWORK GRAPH (Clean Overlapping Circles & Stance Distances)
+            =================================================================== */}
         <Card className="p-3 bg-card border-border shadow-xs relative overflow-hidden">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-1.5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-                <GitGraph className="w-3.5 h-3.5" />
-                Influence Network ({graphNodes.length} Nodes)
+          {/* Header: Title Left, Explanation Mark Far Right */}
+          <div className="flex items-center justify-between w-full mb-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                <GitGraph className="w-3.5 h-3.5 shrink-0" />
+                Network Topology
               </CardTitle>
+              {isExpanded && (
+                <Badge
+                  variant="outline"
+                  className="text-[9px] border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-mono shrink-0 ml-1"
+                >
+                  Green Halos = Agreement
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex items-center shrink-0 ml-2">
               <MetricInfoBadge
-                title="Opinion Dynamics Network"
-                whatItIs="Directed topological graph illustrating persuasion vectors between stakeholders."
-                calculation="Nodes show active stances [-5.0, +5.0]. Curved Bézier arrows represent directed persuasion; arrow thickness is proportional to accumulated persuasion points."
+                title="Topological Agreement & Influence Network"
+                whatItIs="Displays directed persuasion vectors between agents. Distance reflects agreement: aligned agents draw together, while polarized agents spread apart."
+                calculation="Agents with agreement ≥ 72% display glowing circular halos that overlap. Opposing agents sit farther apart with no green background."
               />
             </div>
-            <Badge
-              variant="outline"
-              className="text-[9px] border-teal-500/30 text-teal-700 dark:text-teal-300 font-mono"
-            >
-              {analytics?.edges?.length || 0} Directed Edges
-            </Badge>
           </div>
 
           <div
@@ -344,16 +588,18 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
-            className={`w-full ${isExpanded ? "h-68" : "h-56"} bg-background/50 rounded-lg border border-border relative overflow-hidden flex items-center justify-center transition-all ${
+            className={`w-full ${isExpanded ? "h-72" : "h-60"} bg-background/60 rounded-xl border border-border/80 relative overflow-hidden flex items-center justify-center transition-all ${
               isDragging ? "cursor-grabbing" : "cursor-grab"
             }`}
           >
-            <div className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-card/90 border border-border p-1 rounded-md shadow-2xs">
+            {/* Viewport Reset / Zoom Controls */}
+            <div className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-card/90 backdrop-blur border border-border p-1 rounded-md shadow-2xs">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setZoom((z) => Math.min(z + 0.2, 2.5))}
                 className="h-5 w-5 p-0 cursor-pointer"
+                title="Zoom In"
               >
                 <ZoomIn className="w-3 h-3" />
               </Button>
@@ -362,6 +608,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                 size="sm"
                 onClick={() => setZoom((z) => Math.max(z - 0.2, 0.6))}
                 className="h-5 w-5 p-0 cursor-pointer"
+                title="Zoom Out"
               >
                 <ZoomOut className="w-3 h-3" />
               </Button>
@@ -373,6 +620,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   setPan({ x: 0, y: 0 });
                 }}
                 className="h-5 w-5 p-0 cursor-pointer"
+                title="Reset View"
               >
                 <RotateCcw className="w-3 h-3" />
               </Button>
@@ -384,25 +632,71 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               className="w-full h-full select-none"
             >
               <defs>
-                {/* Arrowhead marker: Tip is at x=9, y=5 */}
                 <marker
                   id="arrowhead"
                   viewBox="0 0 10 10"
                   refX="8"
                   refY="5"
-                  markerWidth="6"
-                  markerHeight="6"
+                  markerUnits="userSpaceOnUse"
+                  markerWidth="7.5"
+                  markerHeight="7.5"
                   orient="auto"
                 >
                   <path
-                    d="M 0 1.5 L 9 5 L 0 8.5 z"
-                    className="fill-teal-600 dark:fill-teal-400"
+                    d="M 0 1.5 L 8.5 5 L 0 8.5 z"
+                    className="fill-teal-600/80 dark:fill-teal-400/80"
                   />
                 </marker>
+                <marker
+                  id="arrowhead-active"
+                  viewBox="0 0 10 10"
+                  refX="8"
+                  refY="5"
+                  markerUnits="userSpaceOnUse"
+                  markerWidth="8.5"
+                  markerHeight="8.5"
+                  orient="auto"
+                >
+                  <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#0d9488" />
+                </marker>
+
+                <radialGradient id="softGreenHalo">
+                  <stop offset="0%" stopColor="#10b981" stopOpacity="0.45" />
+                  <stop offset="65%" stopColor="#10b981" stopOpacity="0.18" />
+                  <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
+                </radialGradient>
               </defs>
 
               <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-                {/* Directed Edges: Calculated to touch outer node boundary cleanly */}
+                {/* =========================================================
+                    LAYER 1: CLEAN GREEN CIRCULAR HALOS (Overlapping if Agree)
+                    ========================================================= */}
+                {graphNodes.map((node) => {
+                  const status = agentAgreementStatus.get(node.name);
+                  if (!status || !status.hasHighAgreement) return null;
+
+                  const haloR = isExpanded ? 46 : 38;
+                  const opacity = Math.min(
+                    0.9,
+                    0.45 + (status.maxScore - 0.72) * 1.5,
+                  );
+
+                  return (
+                    <circle
+                      key={`halo-${node.id}`}
+                      cx={node.x}
+                      cy={node.y}
+                      r={haloR}
+                      fill="url(#softGreenHalo)"
+                      opacity={opacity}
+                      className="pointer-events-none transition-all duration-300"
+                    />
+                  );
+                })}
+
+                {/* =========================================================
+                    LAYER 2: DIRECTED PERSUASION EDGES
+                    ========================================================= */}
                 {analytics?.edges?.map((edge, i) => {
                   const src = nodeMap.get(edge.source);
                   const tgt = nodeMap.get(edge.target);
@@ -411,22 +705,18 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   const dx = tgt.x - src.x;
                   const dy = tgt.y - src.y;
 
-                  // Curvature offset
-                  const curvature = 0.22;
+                  const curvature = 0.2;
                   const cx = (src.x + tgt.x) / 2 - dy * curvature;
                   const cy = (src.y + tgt.y) / 2 + dx * curvature;
 
-                  // Outer node circle radius = 17px
-                  const nodeRadius = 18;
+                  const nodeRadius = 17;
 
-                  // Start point on source boundary
                   const dSrcX = cx - src.x;
                   const dSrcY = cy - src.y;
                   const distSrc = Math.hypot(dSrcX, dSrcY) || 1;
                   const startX = src.x + (dSrcX / distSrc) * nodeRadius;
                   const startY = src.y + (dSrcY / distSrc) * nodeRadius;
 
-                  // End point on target boundary (arrow touches outer ring)
                   const dTgtX = cx - tgt.x;
                   const dTgtY = cy - tgt.y;
                   const distTgt = Math.hypot(dTgtX, dTgtY) || 1;
@@ -444,22 +734,24 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                       <path
                         d={`M ${startX} ${startY} Q ${cx} ${cy} ${endX} ${endY}`}
                         fill="none"
-                        stroke={
-                          isHighlighted
-                            ? "oklch(0.55 0.13 185)"
-                            : "currentColor"
-                        }
+                        stroke={isHighlighted ? "#0d9488" : "currentColor"}
                         strokeWidth={
-                          isHighlighted ? 2.5 : Math.max(1.2, weight * 2.2)
+                          isHighlighted ? 2.2 : Math.max(1.1, weight * 1.8)
                         }
-                        markerEnd="url(#arrowhead)"
-                        className="text-teal-600/65 dark:text-teal-400/55 transition-colors"
+                        markerEnd={
+                          isHighlighted
+                            ? "url(#arrowhead-active)"
+                            : "url(#arrowhead)"
+                        }
+                        className="text-teal-600/70 dark:text-teal-400/60 transition-colors"
                       />
                     </g>
                   );
                 })}
 
-                {/* Nodes with Full Names on badges */}
+                {/* =========================================================
+                    LAYER 3: AGENT NODES
+                    ========================================================= */}
                 {graphNodes.map((n) => {
                   const isSel = selectedAgent === n.name;
                   const fullName = n.name || n.id || "Agent";
@@ -468,7 +760,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                       ? `+${n.currentStance.toFixed(1)}`
                       : n.currentStance.toFixed(1);
                   const labelText = `${fullName} (${stanceStr})`;
-                  const pillWidth = Math.max(80, labelText.length * 5.6 + 14);
+                  const pillWidth = Math.max(78, labelText.length * 5.4 + 14);
 
                   return (
                     <g
@@ -483,12 +775,13 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                           className="fill-teal-500/20 animate-ping"
                         />
                       )}
+
                       <circle
                         r="17"
-                        className={`transition-all duration-150 stroke-2 ${
+                        className={`transition-all duration-200 stroke-2 ${
                           isSel
                             ? "stroke-teal-500 fill-teal-50 dark:fill-teal-950"
-                            : "stroke-border group-hover:stroke-teal-500 fill-background"
+                            : "stroke-border/80 group-hover:stroke-teal-500 fill-card"
                         }`}
                       />
                       <clipPath id={`avatar-clip-${n.index}`}>
@@ -503,7 +796,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                         clipPath={`url(#avatar-clip-${n.index})`}
                       />
 
-                      {/* Dynamic width badge showing the Full Name */}
                       <g transform="translate(0, 24)">
                         <rect
                           x={-pillWidth / 2}
@@ -511,13 +803,13 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                           width={pillWidth}
                           height="14"
                           rx="4"
-                          className="fill-card/95 stroke-border/80 shadow-xs"
+                          className="fill-card/95 stroke-border/90 shadow-2xs"
                           strokeWidth="0.8"
                         />
                         <text
                           textAnchor="middle"
                           dominantBaseline="middle"
-                          className="text-[8px] font-bold fill-foreground"
+                          className="text-[8px] font-bold fill-foreground select-none"
                         >
                           {labelText}
                         </text>
@@ -528,30 +820,117 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               </g>
             </svg>
 
-            <div className="absolute bottom-1.5 left-2 text-[8.5px] text-muted-foreground flex items-center gap-1 font-mono pointer-events-none">
+            <div className="absolute bottom-1.5 left-2 text-[8px] text-muted-foreground flex items-center gap-1 font-mono pointer-events-none">
               <Move className="w-2.5 h-2.5 text-teal-600" />
-              <span>Drag to pan • Scroll to zoom</span>
+              <span>Pan & Zoom enabled</span>
             </div>
           </div>
         </Card>
 
-        {/* 2. Smoothed Opinion Trajectory (Connected Dots + Wide Tooltip) */}
+        {/* ===================================================================
+            2. TASA DISTILLED KEY FINDINGS
+            =================================================================== */}
+        {analytics?.key_findings && analytics.key_findings.length > 0 && (
+          <Card className="p-3 bg-card border-border shadow-xs space-y-2.5">
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                  <Flame className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  Distilled Key Findings
+                </CardTitle>
+                {isExpanded && (
+                  <Badge
+                    variant="outline"
+                    className="text-[9px] font-mono border-amber-500/40 text-amber-600 shrink-0 ml-1"
+                  >
+                    {analytics.key_findings.length} Confirmed
+                  </Badge>
+                )}
+              </div>
+
+              <div className="flex items-center shrink-0 ml-2">
+                <MetricInfoBadge
+                  title="Topic-Anchored Semantic Accumulator (TASA)"
+                  whatItIs="Online semantic clustering identifying persistent, high-heat contentions and consensus findings across debate rounds."
+                  calculation="Statements are embedded and clustered at cosine threshold ≥ 0.76. Once heat hits ≥ 3 distinct turns, a micro-LLM permanently distills the canonical statement."
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {analytics.key_findings.map((finding) => (
+                <div
+                  key={finding.id}
+                  className="p-2.5 rounded-lg bg-muted/30 border border-border/70 space-y-1.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-xs font-semibold text-foreground leading-snug">
+                      &quot;{finding.statement}&quot;
+                    </p>
+                    <Badge
+                      variant="secondary"
+                      className="text-[9px] font-mono px-1.5 py-0 h-4 shrink-0 bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300"
+                    >
+                      <Flame className="w-2.5 h-2.5 mr-0.5 inline fill-current" />
+                      Heat {finding.heat}
+                    </Badge>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1 border-t border-border/40">
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {finding.supporting_agents?.map((a) => (
+                        <span
+                          key={a}
+                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-medium text-[9px]"
+                        >
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                          {a.split(" ")[0]}
+                        </span>
+                      ))}
+                      {finding.opposing_agents?.map((a) => (
+                        <span
+                          key={a}
+                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-500/10 text-rose-700 dark:text-rose-300 font-medium text-[9px]"
+                        >
+                          <XCircle className="w-2.5 h-2.5" />
+                          {a.split(" ")[0]}
+                        </span>
+                      ))}
+                    </div>
+                    <span className="font-mono text-[9px] text-muted-foreground shrink-0">
+                      Rounds {finding.first_round}-{finding.last_round}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* ===================================================================
+            3. SMOOTHED OPINION CURVES
+            =================================================================== */}
         <Card className="p-3 bg-card border-border shadow-xs">
-          <CardHeader className="p-0 pb-2 flex-row items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-                <Activity className="w-3.5 h-3.5" />
+          <CardHeader className="p-0 pb-2 flex-row items-center justify-between w-full">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                <Activity className="w-3.5 h-3.5 shrink-0" />
                 Smoothed Opinion Curves
               </CardTitle>
+              {isExpanded && (
+                <span className="text-[9px] font-mono text-muted-foreground shrink-0 ml-1">
+                  Range: [-5.0, +5.0]
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center shrink-0 ml-2">
               <MetricInfoBadge
                 title="Opinion Drift Trajectories"
                 whatItIs="Tracks continuous stance drift [-5.0, +5.0] for every panelist across discussion rounds."
                 calculation="Each turn is graded via DeBERTa-v3 NLI continuous 2-way softmax. Stances are forward-filled across rounds to ensure continuous lines with visible markers."
               />
             </div>
-            <span className="text-[9px] font-mono text-muted-foreground">
-              Range: [-5.0, +5.0]
-            </span>
           </CardHeader>
           <CardContent className="p-0">
             <div className={`${isExpanded ? "h-44" : "h-36"} w-full`}>
@@ -611,25 +990,30 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </CardContent>
         </Card>
 
-        {/* 3. Consensus Dynamics */}
+        {/* ===================================================================
+            4. CONSENSUS DYNAMICS
+            =================================================================== */}
         <Card className="p-3 bg-card border-border shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-1.5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-                <Scale className="w-3.5 h-3.5" />
-                Consensus Dynamics (Agreement)
+          <div className="flex items-center justify-between w-full mb-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                <Scale className="w-3.5 h-3.5 shrink-0" />
+                Consensus Dynamics
               </CardTitle>
+              {latestAgreement && (
+                <Badge className="text-[9px] bg-teal-600 text-white font-mono px-1.5 py-0 h-4 shrink-0 ml-1">
+                  {latestAgreement.classification}
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex items-center shrink-0 ml-2">
               <MetricInfoBadge
                 title="Consensus Over Rounds"
                 whatItIs="Chronological agreement tracking whether the deliberation is converging toward consensus or polarizing over time."
                 calculation="Calculated per round across all active agents' most recent stances: 1.0 - (mean absolute pairwise diff / 10.0). Scores range from 0.0 (extreme polarization) to 1.0 (unanimous consensus)."
               />
             </div>
-            {latestAgreement && (
-              <Badge className="text-[9px] bg-teal-600 text-white font-mono px-1.5 py-0 h-4">
-                {latestAgreement.classification}
-              </Badge>
-            )}
           </div>
           <div className={`${isExpanded ? "h-36" : "h-28"} w-full`}>
             <ResponsiveContainer width="100%" height="100%">
@@ -684,23 +1068,30 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </div>
         </Card>
 
-        {/* 4. Influence Power Rankings */}
+        {/* ===================================================================
+            5. PERSUASION POWER RANKINGS
+            =================================================================== */}
         <Card className="p-3 bg-card border-border shadow-xs space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-                <Award className="w-3.5 h-3.5" />
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                <Award className="w-3.5 h-3.5 shrink-0" />
                 Persuasion Power Rankings
               </CardTitle>
+              {isExpanded && (
+                <span className="text-[9px] text-muted-foreground font-mono shrink-0 ml-1">
+                  Outgoing Weight
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center shrink-0 ml-2">
               <MetricInfoBadge
                 title="Persuasion Power Ranking"
                 whatItIs="Total outbound persuasion effect generated by each stakeholder across the debate."
                 calculation="Sum of outgoing edge weights from this agent in the influence matrix. Convergence only counts if the listener is permitted to hear the agent in the listening matrix."
               />
             </div>
-            <span className="text-[9px] text-muted-foreground font-mono">
-              Outgoing Weight
-            </span>
           </div>
 
           <div className="space-y-2">
@@ -731,7 +1122,9 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   </div>
                   <div className="h-1.5 w-full bg-muted/60 rounded-full overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-500 ${isLead ? "bg-amber-500" : "bg-teal-600"}`}
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        isLead ? "bg-amber-500" : "bg-teal-600"
+                      }`}
                       style={{ width: `${barPercent}%` }}
                     />
                   </div>
@@ -741,23 +1134,30 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </div>
         </Card>
 
-        {/* 5. Persuasion Signals with Full Names */}
+        {/* ===================================================================
+            6. PERSUASION SIGNALS LOG
+            =================================================================== */}
         <Card className="p-3 bg-card border-border shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-                <TrendingUp className="w-3.5 h-3.5" />
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                <TrendingUp className="w-3.5 h-3.5 shrink-0" />
                 Persuasion Signals Log
               </CardTitle>
+              {isExpanded && (
+                <span className="text-[9px] text-muted-foreground font-mono shrink-0 ml-1">
+                  CFG Shifts
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center shrink-0 ml-2">
               <MetricInfoBadge
                 title="Persuasion Shift Signals"
                 whatItIs="Step-by-step record whenever a speaker successfully persuades or polarizes a listener."
                 calculation="Magnitude Δ = Current_Stance - Prior_Stance. Guidance scale γ = |Δ| * 0.05. Categorized as Convergence (moving closer) or Polarization (moving further away)."
               />
             </div>
-            <span className="text-[9px] text-muted-foreground font-mono">
-              CFG Shifts
-            </span>
           </div>
 
           <div className="space-y-1.5">
@@ -771,7 +1171,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                 .slice(-5)
                 .reverse()
                 .map((sig) => {
-                  // Display Full Names without truncation
                   const src = String(sig.source || "Group Deliberation");
                   const tgt = String(sig.target || "Panelist");
                   const shiftVal =
@@ -799,9 +1198,6 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="text-[9px] text-muted-foreground truncate hidden sm:inline">
-                          {sig.dynamic || "Shift"}
-                        </span>
                         <Badge
                           variant="secondary"
                           className={`text-[9px] font-mono px-1 py-0 h-4 ${
@@ -822,21 +1218,26 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </div>
         </Card>
 
-        {/* 6. Grouped & Expandable Policy Citations */}
+        {/* ===================================================================
+            7. GROUPED POLICY CITATIONS
+            =================================================================== */}
         <Card className="p-3 bg-card border-border shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
-                <ExternalLink className="w-3.5 h-3.5" />
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-teal-700 dark:text-teal-400 truncate">
+                <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                 Policy Citations by Domain
               </CardTitle>
+            </div>
+
+            <div className="flex items-center shrink-0 ml-2 gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
               <MetricInfoBadge
                 title="Grouped Policy Evidence"
                 whatItIs="External regulatory, legal, and empirical documentation cited by agents during deliberation."
                 calculation="Aggregated across turns, grouped by root domain, with citation frequency counts and interactive links."
               />
             </div>
-            <Layers className="w-3 h-3 text-muted-foreground" />
           </div>
 
           <div className="space-y-1.5 text-xs">

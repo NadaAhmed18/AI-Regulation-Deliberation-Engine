@@ -42,10 +42,6 @@ import {
 } from "@/types/simulation";
 import { SimulationAPI, getAvatarPath, extractErrorMessage } from "@/lib/api";
 
-/**
- * Parses raw text with brackets like 【source 1†https://...】 into clean inline hyperlinks
- * and generates structured bottom references.
- */
 interface ParsedContentResult {
   formattedParts: React.ReactNode[];
   references: Array<{
@@ -70,7 +66,6 @@ function parseAndFormatContent(
     locator?: string;
   }> = [];
 
-  // Register a URL and assign a continuous 1-based index
   const registerUrl = (rawUrl: string, locator?: string): number => {
     const cleanUrl = rawUrl.trim();
     if (urlMap.has(cleanUrl)) {
@@ -98,16 +93,13 @@ function parseAndFormatContent(
     return newIdx;
   };
 
-  // Pre-seed known URLs from tool execution into reference indices
   extraSources.forEach((src) => {
     if (src && (src.startsWith("http://") || src.startsWith("https://"))) {
       registerUrl(src);
     }
   });
 
-  // 1. Matches ANY bracketed citation: 【...】
   const bracketCitationRegex = /【([^】]+)】/g;
-
   const segments: React.ReactNode[] = [];
   let lastIdx = 0;
   let match: RegExpExecArray | null;
@@ -118,14 +110,10 @@ function parseAndFormatContent(
       segments.push(renderMarkdownFormatting(textBefore, `txt-${lastIdx}`));
     }
 
-    // Normalize unicode spaces (e.g. \u202F, \u00A0) to standard spaces
     const rawInner = match[1];
     const inner = rawInner.replace(/[\u202F\u00A0\r\n\t]/g, " ").trim();
-
-    // Strategy A: Direct URL inside tag? (e.g. 【https://...】 or 【source 1†https://...】)
     const directUrlMatch = inner.match(/https?:\/\/[^\s】]+/i);
 
-    // Strategy B: Parse index and locator (e.g. "source 1†L23-L28", "source 2†L1-L4", "2†source", "1")
     let sourceNum: number | null = null;
     let locator: string | undefined = undefined;
 
@@ -140,7 +128,7 @@ function parseAndFormatContent(
           parts[1].toLowerCase() !== "source" &&
           !parts[1].startsWith("http")
         ) {
-          locator = parts[1]; // e.g. "L23-L28"
+          locator = parts[1];
         }
       } else if (numMatchRight) {
         sourceNum = parseInt(numMatchRight[0], 10);
@@ -159,7 +147,6 @@ function parseAndFormatContent(
       targetUrl = directUrlMatch[0];
       displayIdx = registerUrl(targetUrl, locator);
     } else if (sourceNum !== null) {
-      // 1-based index pointing to extraSources
       const candidateUrl = extraSources[sourceNum - 1];
       if (candidateUrl) {
         targetUrl = candidateUrl;
@@ -169,7 +156,6 @@ function parseAndFormatContent(
       }
     }
 
-    // Render clickable footnote badge if URL resolved, or clean pill if unresolved
     if (targetUrl) {
       segments.push(
         <a
@@ -214,7 +200,6 @@ function renderMarkdownFormatting(
   text: string,
   keyPrefix: string,
 ): React.ReactNode {
-  // Simple bold markdown parser (**text**)
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return (
     <span key={keyPrefix}>
@@ -387,6 +372,9 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
     setInterventionInput("");
   };
 
+  // =========================================================================
+  // VIEW 1: CONFIGURATION VIEW
+  // =========================================================================
   if (isConfiguring) {
     const hasIncomplete = personas.some(
       (p) => !p.name.trim() || !p.background.trim(),
@@ -409,7 +397,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             </h1>
             <p className="text-xs text-muted-foreground max-w-lg mx-auto">
               Select a debate topic, establish your panel of stakeholder
-              personas, and configure communication edges.
+              personas, and configure communication listening topology.
             </p>
           </div>
 
@@ -420,13 +408,14 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             >
               <AlertCircle className="h-4 w-4" />
               <AlertTitle className="text-xs font-bold">
-                Configuration Error
+                Configuration Notice
               </AlertTitle>
               <AlertDescription className="text-xs">
                 {errorMessage}
               </AlertDescription>
               {onClearError && (
                 <button
+                  type="button"
                   onClick={onClearError}
                   className="absolute top-2.5 right-2.5 text-muted-foreground hover:text-foreground cursor-pointer"
                 >
@@ -436,7 +425,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             </Alert>
           )}
 
-          {/* Topic */}
+          {/* 1. Deliberation Topic */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3">
             <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
               <Sliders className="w-3.5 h-3.5" />
@@ -481,7 +470,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             />
           </Card>
 
-          {/* Topology */}
+          {/* 2. Communication Topology */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
@@ -526,9 +515,9 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               {topologyMode === "custom" && (
                 <Badge
                   variant="outline"
-                  className="text-[9px] border-amber-500 text-amber-600"
+                  className="text-[9px] border-amber-500 text-amber-600 font-mono"
                 >
-                  Custom Edge Matrix
+                  Custom Matrix Active
                 </Badge>
               )}
             </div>
@@ -575,7 +564,11 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => toggleVisibility(lName, sName)}
-                                  className={`p-1 rounded cursor-pointer ${isAllowed ? "text-emerald-600 bg-emerald-500/10" : "text-rose-500 bg-rose-500/10"}`}
+                                  className={`p-1 rounded cursor-pointer ${
+                                    isAllowed
+                                      ? "text-emerald-600 bg-emerald-500/10"
+                                      : "text-rose-500 bg-rose-500/10"
+                                  }`}
                                 >
                                   {isAllowed ? (
                                     <Eye className="w-3 h-3" />
@@ -595,7 +588,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             )}
           </Card>
 
-          {/* Stakeholders */}
+          {/* 3. Stakeholder Personas */}
           <Card className="p-4 bg-card border-border/80 shadow-xs space-y-3.5">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
@@ -638,7 +631,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 value={llmPrompt}
                 onChange={(e) => setLlmPrompt(e.target.value)}
                 placeholder="Optional AI prompt: e.g. Open source researcher vs EU AI compliance officer..."
-                className="flex-1 text-xs px-3 py-1.5 rounded-md bg-background border border-border text-foreground"
+                className="flex-1 text-xs px-3 py-1.5 rounded-md bg-background border border-border text-foreground focus:outline-none focus:ring-1 focus:ring-teal-500"
               />
               <Button
                 variant="outline"
@@ -683,6 +676,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     </div>
                     {personas.length > 2 && (
                       <button
+                        type="button"
                         onClick={() =>
                           onUpdatePersonas(personas.filter((_, i) => i !== idx))
                         }
@@ -737,7 +731,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
           >
             <Play className="w-4 h-4 mr-2 fill-current" />
             {isRunning
-              ? "Starting Session..."
+              ? "Starting Deliberation..."
               : `Start Simulation (${personas.length} Agents)`}
           </Button>
         </div>
@@ -746,17 +740,21 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
   }
 
   // =========================================================================
-  // VIEW 2: ARENA VIEW (FORMATTED CITATIONS & FOOTNOTES)
+  // VIEW 2: ARENA VIEW (Live Feed & Formatted Turns)
   // =========================================================================
   return (
     <>
       <div className="flex flex-col h-full min-h-0 bg-background/50 overflow-hidden">
-        {/* Header */}
+        {/* Arena Top Navigation Header */}
         <div className="p-3 border-b border-border/50 flex items-center justify-between bg-background/80 backdrop-blur-sm shrink-0">
           <div className="min-w-0 flex-1 pr-2">
             <div className="flex items-center gap-2">
               <Radio
-                className={`w-3.5 h-3.5 ${isRunning ? "text-teal-500 animate-pulse" : "text-muted-foreground"}`}
+                className={`w-3.5 h-3.5 ${
+                  isRunning
+                    ? "text-teal-500 animate-pulse"
+                    : "text-muted-foreground"
+                }`}
               />
               <h2 className="text-xs font-bold uppercase tracking-wider text-foreground">
                 Deliberation Arena
@@ -775,8 +773,8 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
 
           <div className="hidden md:flex items-center gap-1 mr-2">
             <button
+              type="button"
               onClick={() => setSelectedAgentFilter(null)}
-              style={{ cursor: "pointer" }}
               className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all cursor-pointer ${
                 selectedAgentFilter === null
                   ? "bg-teal-600 text-white"
@@ -788,12 +786,12 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
             {personas.map((p) => (
               <button
                 key={p.name}
+                type="button"
                 onClick={() =>
                   setSelectedAgentFilter(
                     selectedAgentFilter === p.name ? null : p.name,
                   )
                 }
-                style={{ cursor: "pointer" }}
                 className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all cursor-pointer ${
                   selectedAgentFilter === p.name
                     ? "bg-teal-600 text-white"
@@ -801,7 +799,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 }`}
                 title={p.name}
               >
-                {/* Full name without .split(" ")[0] */}
                 {p.name || "Agent"}
               </button>
             ))}
@@ -820,7 +817,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
           </div>
         </div>
 
-        {/* Turn Feed */}
+        {/* Turn Feed Container */}
         <div
           ref={turnsScrollRef}
           className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 scrollbar-thin"
@@ -844,7 +841,6 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               const cfg = turn.opinion_snapshot?.cfg;
               const avatar = getAgentAvatar(turn.agent_name);
 
-              // Parse citations out of text and build structured inline links + references
               const { formattedParts, references } = parseAndFormatContent(
                 turn.content || "",
                 turn.retrieved_sources || [],
@@ -906,7 +902,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                     <Card className="p-3.5 bg-card border-border/80 text-xs leading-relaxed text-foreground rounded-tl-none shadow-xs">
                       <div>{formattedParts}</div>
 
-                      {/* Clean References Footer */}
+                      {/* References Footnote */}
                       {references.length > 0 && (
                         <div className="mt-3 pt-2.5 border-t border-border/50 space-y-1.5">
                           <span className="text-[9.5px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
@@ -1050,7 +1046,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
               </div>
             )}
 
-            {/* Steer / Next Turn CTA */}
+            {/* Steer Debate / Next Turn Interactive CTA */}
             {!isRunning && turns.length > 0 && (
               <div className="p-4 rounded-xl bg-teal-50/70 dark:bg-teal-950/30 border border-teal-500/30 space-y-3 animate-in fade-in">
                 <div className="flex items-center justify-between">
@@ -1112,7 +1108,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
           </div>
         </div>
 
-        {/* Persistent Bottom Bar */}
+        {/* Persistent Bottom Controls Bar */}
         <div className="p-3 border-t border-border/60 bg-background/90 backdrop-blur flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-1.5">
             <Button
@@ -1152,7 +1148,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
         </div>
       </div>
 
-      {/* Session Details Modal */}
+      {/* Session Details Inspector Modal */}
       {showSessionDetails && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="max-w-lg w-full rounded-xl bg-card border border-border p-5 shadow-lg space-y-4">
@@ -1162,6 +1158,7 @@ export const DebateArena: React.FC<DebateArenaProps> = ({
                 Active Session Details
               </h3>
               <button
+                type="button"
                 onClick={() => setShowSessionDetails(false)}
                 className="text-muted-foreground hover:text-foreground cursor-pointer"
               >

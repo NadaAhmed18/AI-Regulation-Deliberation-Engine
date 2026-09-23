@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Optional
-
 from src.analytics.common import extract_scored_turns, get_agent_names
 
 
@@ -7,11 +6,18 @@ def compute_topology_influence(
     history_rows: List[Dict[str, Any]],
     personas: List[Dict[str, Any]],
     visibility_matrix: Optional[Dict[str, List[str]]] = None,
-    min_turns: int = 3,
+    min_turns: int = 2,
+    recency_decay: float = 0.85,
 ) -> Dict[str, Any]:
     """
-    Estimates pairwise directed influence matrix based on stance convergence.
-    Adheres strictly to the communication graph in visibility_matrix.
+    Estimates a pairwise directed influence matrix based on stance convergence.
+    
+    Fixes applied:
+    1. Multi-turn Lookback: Resolves topological mismatches by checking all visible 
+       speakers in the agent's listening graph, not just index - 1.
+    2. Recency Decay: Prioritizes recent speakers while crediting earlier speakers 
+       in multi-agent deliberations.
+    3. Lowers cold-start threshold from 3 to 2 turns.
     """
     agent_names = get_agent_names(personas)
     allowed_set = set(agent_names)
@@ -31,37 +37,53 @@ def compute_topology_influence(
             "top_influencer": None,
         }
 
-    previous_stance_by_agent: Dict[str, float] = {}
+    # Track chronological positions and latest stances
+    latest_stance_by_agent: Dict[str, float] = {}
+    latest_turn_idx_by_agent: Dict[str, int] = {}
 
-    for index, turn in enumerate(valid_turns):
+    for turn_idx, turn in enumerate(valid_turns):
         target = turn["agent_name"]
         target_new_stance = turn["stance"]
 
-        if index > 0 and target in previous_stance_by_agent:
-            prev_turn = valid_turns[index - 1]
-            influencer = prev_turn["agent_name"]
-            influencer_stance = prev_turn["stance"]
+        # Only evaluate shift if this agent has taken an earlier turn (has a baseline)
+        if target in latest_stance_by_agent:
+            target_prev_stance = latest_stance_by_agent[target]
+            stance_delta = abs(target_new_stance - target_prev_stance)
 
-            if influencer != target:
-                # Enforce topology visibility: target must be allowed to hear influencer
-                is_visible = True
+            # If the agent's stance actually shifted
+            if stance_delta >= 0.02:
+                # Determine who the target is topologically permitted to hear
                 if visibility_matrix and target in visibility_matrix:
-                    is_visible = influencer in visibility_matrix[target]
+                    permitted_speakers = set(visibility_matrix[target]) - {target}
+                else:
+                    permitted_speakers = set(agent_names) - {target}
 
-                if is_visible:
-                    target_prev_stance = previous_stance_by_agent[target]
-                    dist_before = abs(target_prev_stance - influencer_stance)
-                    dist_after = abs(target_new_stance - influencer_stance)
-                    convergence = dist_before - dist_after
+                # Check convergence against all visible speakers who have spoken previously
+                for influencer in permitted_speakers:
+                    if influencer in latest_stance_by_agent:
+                        influencer_stance = latest_stance_by_agent[influencer]
 
-                    # Only positive convergence counts as persuasion
-                    if convergence > 0:
-                        influence_matrix[influencer][target] = round(
-                            influence_matrix[influencer][target] + convergence, 2
-                        )
+                        dist_before = abs(target_prev_stance - influencer_stance)
+                        dist_after = abs(target_new_stance - influencer_stance)
+                        convergence = dist_before - dist_after
 
-        previous_stance_by_agent[target] = target_new_stance
+                        # Positive convergence: Target moved closer to this influencer
+                        if convergence > 0:
+                            # Calculate turns elapsed since this influencer last spoke
+                            turns_elapsed = max(1, turn_idx - latest_turn_idx_by_agent[influencer])
+                            decay = recency_decay ** (turns_elapsed - 1)
+                            weighted_convergence = convergence * decay
 
+                            influence_matrix[influencer][target] = round(
+                                influence_matrix[influencer][target] + weighted_convergence, 
+                                2
+                            )
+
+        # Update latest stance and turn index for the target
+        latest_stance_by_agent[target] = target_new_stance
+        latest_turn_idx_by_agent[target] = turn_idx
+
+    # Tally total outbound influence score per agent
     scores = {
         src: round(sum(targets.values()), 2)
         for src, targets in influence_matrix.items()

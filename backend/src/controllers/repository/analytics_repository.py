@@ -10,7 +10,7 @@ class AnalyticsRepository(BaseRepository):
         with self.get_cursor() as cur:
             cur.execute(
                 """
-                SELECT simulation_id, opinion_change, agreement, influence, network_graph, persuasion_signals, updated_at
+                SELECT simulation_id, opinion_change, agreement, influence, network_graph, persuasion_signals, key_findings, updated_at
                 FROM simulation_analytics
                 WHERE simulation_id = %s
                 """,
@@ -27,14 +27,15 @@ class AnalyticsRepository(BaseRepository):
         influence: Dict[str, Any],
         network_graph: Dict[str, Any],
         persuasion_signals: list,
+        key_findings: Optional[list] = None,
     ) -> None:
         with self.get_cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO simulation_analytics (
-                    simulation_id, opinion_change, agreement, influence, network_graph, persuasion_signals, updated_at
+                    simulation_id, opinion_change, agreement, influence, network_graph, persuasion_signals, key_findings, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (simulation_id)
                 DO UPDATE SET
                     opinion_change = EXCLUDED.opinion_change,
@@ -42,6 +43,7 @@ class AnalyticsRepository(BaseRepository):
                     influence = EXCLUDED.influence,
                     network_graph = EXCLUDED.network_graph,
                     persuasion_signals = EXCLUDED.persuasion_signals,
+                    key_findings = EXCLUDED.key_findings,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -51,5 +53,6 @@ class AnalyticsRepository(BaseRepository):
                     json.dumps(influence),
                     json.dumps(network_graph),
                     json.dumps(persuasion_signals),
+                    json.dumps(key_findings or []),
                 ),
             )

@@ -87,7 +87,9 @@ class PostgresClient:
                         influence JSONB NOT NULL,
                         network_graph JSONB NOT NULL,
                         persuasion_signals JSONB NOT NULL,
+                        key_findings JSONB DEFAULT '[]'::jsonb,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
+                    ALTER TABLE simulation_analytics ADD COLUMN IF NOT EXISTS key_findings JSONB DEFAULT '[]'::jsonb;
                 """)
             conn.commit()

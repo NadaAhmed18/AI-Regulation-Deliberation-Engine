@@ -85,6 +85,7 @@ class AnalyticsController:
                 influence=metrics["influence"],
                 network_graph=metrics["network_graph"],
                 persuasion_signals=metrics["persuasion_signals"],
+                key_findings=metrics.get("key_findings", [])
             )
 
         # 5. Build standardized UI payload (nodes, edges, trajectories, consensus)
@@ -103,15 +104,28 @@ class AnalyticsController:
         current_round: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Aligns backend metrics with the exact UI graph, chart, and trajectory schemas."""
+        import json
+
         network = data.get("network_graph", {})
         nodes = network.get("nodes", [])
 
+        # Fallback node population if debate just initialized and has no graph yet
         if not nodes and personas:
             for idx, p in enumerate(personas):
                 latest = next((h for h in reversed(history) if h.get("agent_name") == p["name"]), None)
                 stance = 0.0
-                if latest and latest.get("opinion_snapshot"):
-                    stance = float(latest["opinion_snapshot"].get("current_stance_score", 0.0))
+                if latest:
+                    raw_snapshot = latest.get("opinion_snapshot")
+                    if isinstance(raw_snapshot, str):
+                        try:
+                            raw_snapshot = json.loads(raw_snapshot)
+                        except Exception:
+                            raw_snapshot = {}
+                    if isinstance(raw_snapshot, dict):
+                        try:
+                            stance = float(raw_snapshot.get("current_stance_score", 0.0))
+                        except (ValueError, TypeError):
+                            stance = 0.0
 
                 nodes.append({
                     "id": p["name"],
@@ -121,7 +135,7 @@ class AnalyticsController:
                     "role": p.get("background", "Panelist"),
                 })
 
-        # Build continuous, forward-filled trajectory points for time-series charts
+        # Build continuous, forward-filled trajectory points for time-series line charts
         trajectory_map: Dict[int, Dict[str, Any]] = {}
         latest_stances: Dict[str, float] = {}
 
@@ -134,8 +148,14 @@ class AnalyticsController:
         for rnd in rounds:
             for turn in turns_by_round.get(rnd, []):
                 agent = turn.get("agent_name")
-                snapshot = turn.get("opinion_snapshot") or {}
-                score = snapshot.get("current_stance_score")
+                raw_snapshot = turn.get("opinion_snapshot") or {}
+                if isinstance(raw_snapshot, str):
+                    try:
+                        raw_snapshot = json.loads(raw_snapshot)
+                    except Exception:
+                        raw_snapshot = {}
+
+                score = raw_snapshot.get("current_stance_score")
                 if agent and score is not None:
                     try:
                         latest_stances[agent] = round(float(score), 2)
@@ -146,22 +166,36 @@ class AnalyticsController:
             point.update(latest_stances)
             trajectory_map[rnd] = point
 
-        # Aggregate unique citations
-        citations = sorted({
-            str(src).strip()
-            for turn in history
-            for src in (turn.get("retrieved_sources") or [])
-            if str(src).strip()
-        })
+        # Aggregate unique citations safely
+        citations_set = set()
+        for turn in history:
+            raw_sources = turn.get("retrieved_sources") or []
+            if isinstance(raw_sources, str):
+                try:
+                    raw_sources = json.loads(raw_sources)
+                except Exception:
+                    raw_sources = []
+            for src in raw_sources:
+                clean_src = str(src).strip()
+                if clean_src:
+                    citations_set.add(clean_src)
+
+        citations = sorted(list(citations_set))
 
         return {
             "nodes": nodes,
             "edges": network.get("edges", []),
             "trajectory": list(trajectory_map.values()),
             "agreement": data.get("agreement", []),
+            "topological_agreement": data.get("topological_agreement", {
+                "matrix": {},
+                "agent_scores": {},
+                "network_agreement": 1.0,
+            }),
             "influence": data.get("influence", {}),
             "persuasion_signals": data.get("persuasion_signals", []),
             "citations": citations,
+            "key_findings": data.get("key_findings", []),
             "is_replay": is_replay,
             "current_round": current_round,
         }

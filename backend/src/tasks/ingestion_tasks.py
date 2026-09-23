@@ -12,16 +12,15 @@ compute allocation instead of sharing the API container's.
 
 import asyncio
 import logging
-
-from celery import shared_task
-
+ 
 from src.rag.stages.ingestion import ingest_documents
 from src.rag.stages.scraper import ingest_batch
-
+from src.tasks.celery_app import celery_app
+ 
 logger = logging.getLogger(__name__)
-
-
-@shared_task(
+ 
+ 
+@celery_app.task(
     name="ingest_url",
     bind=True,
     # A scrape can fail for transient reasons (site rate-limiting, a
@@ -42,12 +41,12 @@ def ingest_url_task(self, url: str) -> dict:
     on immediately).
     """
     logger.info("Ingesting URL (attempt %d): %s", self.request.retries + 1, url)
-
+ 
     docs = asyncio.run(ingest_batch([url]))
     if not docs:
         logger.warning("No content extracted from %s", url)
         return {"url": url, "status": "empty", "ingested": False}
-
+ 
     result = ingest_documents([docs[0]], on_conflict="ignore")
     logger.info("Ingested %s: %s", url, result)
     return {"url": url, "status": "ok", "ingested": True, "detail": result}

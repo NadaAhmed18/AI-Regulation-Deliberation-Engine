@@ -12,7 +12,7 @@ services:
   # Note: this is a manual knob, not automatic scaling. Docker Compose
   # has no built-in mechanism that watches volume size and adjusts these
   # limits on its own -- that's what Kubernetes' HPA/VPA or a cloud
-  # autoscaler do. See docs/ for that distinction if it matters for
+  # autoscaler do. See docs/ for that distinction if it matters for your
   # deployment target.
   # ============================================================================
  
@@ -23,8 +23,16 @@ services:
     ports:
       - "7474:7474"   # HTTP browser UI
       - "7687:7687"   # Bolt protocol
-    env_file:
-      - .env
+    environment:
+      # Explicit, not env_file -- env_file would load ALL of docker/.env,
+      # including NEO4J_USERNAME/NEO4J_PASSWORD (added only for the
+      # backend app to read). Neo4j's image auto-converts any NEO4J_*
+      # var into a neo4j.conf setting, so those two get mistranslated
+      # into a bogus "PASSWORD"/"USERNAME" config key and crash the
+      # container. NEO4J_AUTH is the actual mechanism for setting
+      # credentials here.
+      NEO4J_AUTH: "${NEO4J_AUTH}"
+      NEO4J_PLUGINS: "${NEO4J_PLUGINS}"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -33,7 +41,8 @@ services:
       test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:7474 || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 90s
     deploy:
       resources:
         limits:
@@ -116,7 +125,7 @@ services:
           memory: "${REDIS_MEMORY:-256m}"
  
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: minio
     restart: always
     command: server /data --console-address ":9091"
@@ -139,7 +148,7 @@ services:
           memory: "${MINIO_MEMORY:-512m}"
  
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: minio-init
     depends_on:
       minio:
@@ -168,6 +177,9 @@ services:
       - "3000:3000"
     env_file:
       - .env
+
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1536"  
     deploy:
       resources:
         limits:
@@ -295,7 +307,6 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
-    shm_size: "2gb"  # crawl4ai/Chromium needs this; default 64MB crashes it
     command:
       [
         "celery", "-A", "src.tasks.celery_app", "worker",
@@ -303,6 +314,9 @@ services:
         "--concurrency=${INGESTION_WORKER_CONCURRENCY:-2}",
       ]
     restart: unless-stopped
+
+    healthcheck:
+      disable: true
     env_file:
       - ../backend/.env
       - .env
@@ -339,4 +353,3 @@ volumes:
   clickhouse_logs:
   minio_data:
   neo4j_config:
- 

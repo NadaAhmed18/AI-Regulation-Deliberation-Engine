@@ -206,7 +206,7 @@ def get_simulation(
     if "created_at" in sim and isinstance(sim["created_at"], datetime):
         sim["created_at"] = sim["created_at"].isoformat()
 
-    # 1. Fetch & sanitize all discussion turns
+    # 1. Fetch & sanitize all discussion turns (1 query)
     raw_history = sim_ctrl.repo.get_discussion_history(simulation_id)
     turns = []
     for row in raw_history:
@@ -227,11 +227,15 @@ def get_simulation(
                 pass
         turns.append(turn)
 
-    # 2. Fetch full analytics for this simulation
+    # 2. Fetch analytics (served in ~5ms from cache, passing already queried objects)
     try:
-        analytics = analytics_ctrl.get_simulation_analytics(simulation_id)
+        analytics = analytics_ctrl.get_simulation_analytics(
+            simulation_id=simulation_id,
+            sim_data=sim,
+            history_data=raw_history,
+        )
     except Exception as e:
-        logger.warning(f"Could not compute analytics for {simulation_id}: {e}")
+        logger.warning(f"Could not retrieve analytics for {simulation_id}: {e}")
         analytics = {
             "nodes": [],
             "edges": [],
@@ -240,9 +244,9 @@ def get_simulation(
             "influence": {},
             "persuasion_signals": [],
             "citations": [],
+            "key_findings": [],
         }
 
-    # Package into 1 single unified object
     sim["turns"] = turns
     sim["analytics"] = analytics
 

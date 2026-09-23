@@ -19,6 +19,27 @@ logger = logging.getLogger(__name__)
 # Global in-memory cache to guarantee the LLM is NEVER called twice for the same cluster
 _DISTILLED_STATEMENTS_CACHE: Dict[str, str] = {}
 
+# Global vector cache so we NEVER re-embed already processed turn content
+_EMBEDDING_CACHE: Dict[str, np.ndarray] = {}
+
+# Global Embedder & LLM singletons to prevent re-initialization overhead
+_EMBEDDER_INSTANCE: Optional[Embedder] = None
+_LLM_INSTANCE: Optional[LLMClient] = None
+
+
+def _get_embedder() -> Embedder:
+    global _EMBEDDER_INSTANCE
+    if _EMBEDDER_INSTANCE is None:
+        _EMBEDDER_INSTANCE = Embedder(model_name=EMBEDDING_MODEL)
+    return _EMBEDDER_INSTANCE
+
+
+def _get_llm() -> LLMClient:
+    global _LLM_INSTANCE
+    if _LLM_INSTANCE is None:
+        _LLM_INSTANCE = LLMClient()
+    return _LLM_INSTANCE
+
 
 class KeyFindingCluster:
     def __init__(
@@ -126,8 +147,8 @@ def extract_key_findings(
     if not history_rows:
         return []
 
-    embedder = Embedder(model_name=EMBEDDING_MODEL)
-    llm = LLMClient()
+    embedder = _get_embedder()
+    llm = _get_llm()
     clusters: List[KeyFindingCluster] = []
 
     # Sort turns chronologically
@@ -154,12 +175,17 @@ def extract_key_findings(
         except (ValueError, TypeError):
             stance = 0.0
 
-        # Vector embed the turn content
-        try:
-            vector = embedder.embed([content], is_query=True)[0]
-        except Exception as e:
-            logger.error(f"Vector embedding failed: {e}")
-            continue
+        # Cached vector retrieval by content hash
+        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+        if content_hash in _EMBEDDING_CACHE:
+            vector = _EMBEDDING_CACHE[content_hash]
+        else:
+            try:
+                vector = embedder.embed([content], is_query=True)[0]
+                _EMBEDDING_CACHE[content_hash] = vector
+            except Exception as e:
+                logger.error(f"Vector embedding failed: {e}")
+                continue
 
         norm_v = vector / (np.linalg.norm(vector) + 1e-9)
 
@@ -184,7 +210,7 @@ def extract_key_findings(
             if best_cluster.heat >= heat_threshold and not best_cluster.is_confirmed:
                 best_cluster.promote_to_confirmed(llm)
         else:
-            new_id = f"kf_{hashlib.md5(content[:40].encode()).hexdigest()[:8]}"
+            new_id = f"kf_{content_hash[:8]}"
             new_cluster = KeyFindingCluster(
                 cluster_id=new_id,
                 topic=topic,

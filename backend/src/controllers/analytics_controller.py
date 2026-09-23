@@ -41,29 +41,39 @@ class AnalyticsController:
         simulation_id: str,
         round_number: Optional[int] = None,
         force_compute: bool = False,
+        sim_data: Optional[Dict[str, Any]] = None,
+        history_data: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Retrieves complete analytics.
         - If round_number is provided: Computes historical point-in-time metrics (Replay mode).
-        - If debate is complete and round_number is None: Serves from pre-calculated cache.
-        - Otherwise: Computes live metrics from database history.
+        - If not force_compute and not replay: Fast-paths from database cache (~5ms).
+        - Otherwise: Computes live metrics and updates the database cache.
         """
-        sim = self.sim_repo.get_simulation_by_id(simulation_id)
+        is_replay = round_number is not None
+
+        # 1. FAST-PATH: Cache hit for normal viewing/switching (NOT replay, NOT forced)
+        if not force_compute and not is_replay:
+            cached = self.repo.get_cached_analytics(simulation_id)
+            if cached:
+                # If history was already fetched by caller, reuse it; else query DB
+                history = history_data if history_data is not None else self.sim_repo.get_discussion_history(simulation_id)
+                personas = (sim_data.get("personas") if sim_data else None)
+                if personas is None:
+                    sim = self.sim_repo.get_simulation_by_id(simulation_id)
+                    personas = sim.get("personas", []) if sim else []
+                return self._format_response(cached, history, personas)
+
+        # 2. Slow-path: Fetch simulation & history if not already provided
+        sim = sim_data or self.sim_repo.get_simulation_by_id(simulation_id)
         if not sim:
             raise ValueError(f"Simulation '{simulation_id}' not found.")
 
-        is_completed = sim.get("status") == "completed"
-        is_replay = round_number is not None
-
-        # 1. Cache hit (Only for full, completed debates without replay slicing)
-        if is_completed and not force_compute and not is_replay:
-            cached = self.repo.get_cached_analytics(simulation_id)
-            if cached:
-                history = self.sim_repo.get_discussion_history(simulation_id)
-                return self._format_response(cached, history, sim.get("personas", []))
-
-        # 2. Query discussion history (filtered by round_number if in Replay mode)
-        history = self.sim_repo.get_discussion_history(simulation_id, up_to_round=round_number)
+        history = (
+            history_data
+            if (history_data is not None and not is_replay)
+            else self.sim_repo.get_discussion_history(simulation_id, up_to_round=round_number)
+        )
         personas = sim.get("personas") or []
         visibility_matrix = sim.get("visibility_matrix") or {}
         topic = sim.get("topic", "")
@@ -76,8 +86,8 @@ class AnalyticsController:
             visibility_matrix=visibility_matrix,
         )
 
-        # 4. Cache full result if debate concluded and not a slice
-        if is_completed and not is_replay:
+        # 4. Save cache whenever we compute latest state (NOT in sliced replay mode)
+        if not is_replay:
             self.repo.save_analytics_cache(
                 simulation_id=simulation_id,
                 opinion_change=metrics["opinion_change"],
@@ -85,14 +95,14 @@ class AnalyticsController:
                 influence=metrics["influence"],
                 network_graph=metrics["network_graph"],
                 persuasion_signals=metrics["persuasion_signals"],
-                key_findings=metrics.get("key_findings", [])
+                key_findings=metrics.get("key_findings", []),
             )
 
-        # 5. Build standardized UI payload (nodes, edges, trajectories, consensus)
+        # 5. Build standardized UI payload
         return self._format_response(metrics, history, personas, is_replay=is_replay, current_round=round_number)
 
     def compute_turn_analytics(self, simulation_id: str) -> Dict[str, Any]:
-        """Triggered automatically after turns to update simulation metrics."""
+        """Triggered automatically after turns to update and persist simulation metrics."""
         return self.get_simulation_analytics(simulation_id, force_compute=True)
 
     def _format_response(

@@ -851,8 +851,8 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               <div className="flex items-center shrink-0 ml-2">
                 <MetricInfoBadge
                   title="Topic-Anchored Semantic Accumulator (TASA)"
-                  whatItIs="Online semantic clustering identifying persistent, high-heat contentions and consensus findings across debate rounds."
-                  calculation="Statements are embedded and clustered at cosine threshold ≥ 0.76. Once heat hits ≥ 3 distinct turns, a micro-LLM permanently distills the canonical statement."
+                  whatItIs="Online semantic clustering identifying persistent, high-heat policy contentions and emerging consensus findings across debate rounds."
+                  calculation="Statements are embedded and clustered at cosine threshold ≥ 0.84 with damped centroid anchoring. Once heat reaches ≥ 2 turns, a dedicated micro-LLM permanently distills the thematic policy finding."
                 />
               </div>
             </div>

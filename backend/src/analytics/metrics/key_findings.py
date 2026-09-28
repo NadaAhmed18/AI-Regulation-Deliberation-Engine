@@ -1,7 +1,7 @@
 """
 Topic-Anchored Semantic Accumulator (TASA)
 
-Extracts persistent, low-variance Key Findings from unstructured debate text
+Extracts persistent, low-variance Key Findings and distinct policy sub-topics
 using online vector clustering and one-time micro-LLM distillation.
 """
 
@@ -13,6 +13,7 @@ import numpy as np
 from src.clients.llm_client import LLMClient
 from src.config import EMBEDDING_MODEL
 from src.utils.embedder import Embedder
+from src.utils.prompt_builder import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ _DISTILLED_STATEMENTS_CACHE: Dict[str, str] = {}
 # Global vector cache so we NEVER re-embed already processed turn content
 _EMBEDDING_CACHE: Dict[str, np.ndarray] = {}
 
-# Global Embedder & LLM singletons to prevent re-initialization overhead
+# Global singletons
 _EMBEDDER_INSTANCE: Optional[Embedder] = None
 _LLM_INSTANCE: Optional[LLMClient] = None
 
@@ -67,7 +68,6 @@ class KeyFindingCluster:
         self._record_agent_stance(agent_name, stance)
 
     def _record_agent_stance(self, agent_name: str, stance: float):
-        # Stance on [-5.0, +5.0] scale
         if stance >= 0.2:
             self.supporting_agents.add(agent_name)
             self.opposing_agents.discard(agent_name)
@@ -77,8 +77,12 @@ class KeyFindingCluster:
 
     def add_turn(self, vector: np.ndarray, snippet: str, agent_name: str, round_num: int, stance: float):
         norm_v = vector / (np.linalg.norm(vector) + 1e-9)
-        # Update running centroid average
-        self.centroid = (self.centroid * self.heat + norm_v) / (self.heat + 1)
+        
+        # DAMPED CENTROID UPDATE:
+        # Cap the effective weight to 4. This prevents the centroid from becoming a "black hole"
+        # that averages out over 15 turns and swallows all unrelated sub-topics.
+        effective_weight = min(self.heat, 4)
+        self.centroid = (self.centroid * effective_weight + norm_v) / (effective_weight + 1)
         self.centroid = self.centroid / (np.linalg.norm(self.centroid) + 1e-9)
 
         if len(self.snippets) < 5:
@@ -89,7 +93,7 @@ class KeyFindingCluster:
         self._record_agent_stance(agent_name, stance)
 
     def promote_to_confirmed(self, llm_client: LLMClient) -> None:
-        """Calls the LLM once to freeze the canonical statement permanently."""
+        """Synthesizes arguments into a thematic policy finding using key_finding_distiller.txt."""
         cache_key = hashlib.md5(" ".join(self.snippets[:3]).encode()).hexdigest()
 
         if cache_key in _DISTILLED_STATEMENTS_CACHE:
@@ -97,13 +101,22 @@ class KeyFindingCluster:
             self.is_confirmed = True
             return
 
-        prompt = (
-            f"Topic: '{self.topic}'\n"
-            f"Deliberation arguments:\n"
-            + "\n".join(f"- {s}" for s in self.snippets[:3])
-            + "\n\nSynthesize these arguments into ONE concise, neutral, declarative statement (maximum 12 words) "
-            "summarizing the core finding/contention. Return ONLY the statement string."
-        )
+        formatted_snippets = "\n".join(f"- {s[:250]}..." if len(s) > 250 else f"- {s}" for s in self.snippets[:3])
+
+        try:
+            prompt = render_prompt(
+                "key_finding_distiller",
+                topic=self.topic,
+                snippets=formatted_snippets,
+            )
+        except Exception:
+            # Fallback if template file is being placed
+            prompt = (
+                f"Topic: '{self.topic}'\n"
+                f"Arguments:\n{formatted_snippets}\n\n"
+                "Synthesize the overarching thematic policy finding or contention in 8 to 14 words. "
+                "Do NOT cite specific article numbers. Return ONLY the finding."
+            )
 
         try:
             res = llm_client.generate_response(
@@ -137,12 +150,12 @@ class KeyFindingCluster:
 def extract_key_findings(
     topic: str,
     history_rows: List[Dict[str, Any]],
-    similarity_threshold: float = 0.76,
-    heat_threshold: int = 3,
+    similarity_threshold: float = 0.84,  # Increased from 0.76 to separate distinct sub-topics
+    heat_threshold: int = 2,             # Lowered from 3 to allow emerging themes to qualify
 ) -> List[Dict[str, Any]]:
     """
-    Extracts stable key findings across historical debate turns.
-    Returns only confirmed findings (heat >= heat_threshold).
+    Extracts diverse, stable key findings across historical debate turns.
+    Returns confirmed findings (heat >= heat_threshold).
     """
     if not history_rows:
         return []
@@ -151,12 +164,10 @@ def extract_key_findings(
     llm = _get_llm()
     clusters: List[KeyFindingCluster] = []
 
-    # Sort turns chronologically
     sorted_turns = sorted(history_rows, key=lambda t: (t.get("round_number", 1), t.get("id", 0)))
 
     for turn in sorted_turns:
         content = (turn.get("content") or "").strip()
-        # Skip pleasantries or short non-substantive sentences
         if len(content.split()) < 12:
             continue
 
@@ -175,7 +186,6 @@ def extract_key_findings(
         except (ValueError, TypeError):
             stance = 0.0
 
-        # Cached vector retrieval by content hash
         content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
         if content_hash in _EMBEDDING_CACHE:
             vector = _EMBEDDING_CACHE[content_hash]
@@ -198,6 +208,7 @@ def extract_key_findings(
                 best_sim = sim
                 best_cluster = c
 
+        # If similarity exceeds threshold, add to existing cluster; otherwise fork into a new one
         if best_cluster and best_sim >= similarity_threshold:
             best_cluster.add_turn(
                 vector=vector,
@@ -206,7 +217,6 @@ def extract_key_findings(
                 round_num=round_num,
                 stance=stance,
             )
-            # Promote if hitting heat threshold
             if best_cluster.heat >= heat_threshold and not best_cluster.is_confirmed:
                 best_cluster.promote_to_confirmed(llm)
         else:
@@ -222,7 +232,7 @@ def extract_key_findings(
             )
             clusters.append(new_cluster)
 
-    # Return confirmed clusters sorted by heat (most discussed first)
+    # Return confirmed clusters, sorted by heat (most debated first)
     confirmed = [c.to_dict() for c in clusters if c.is_confirmed]
     confirmed.sort(key=lambda k: k["heat"], reverse=True)
     return confirmed

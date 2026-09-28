@@ -50,7 +50,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
 
 RUN playwright install --with-deps chromium \
-    && chmod -R 755 /ms-playwright
+    && chmod -R 755 /ms-playwright \
+    && mkdir -p /app/data /app/outputs \
+    && chown appuser:appuser /app /app/data /app/outputs
 
 USER appuser
 

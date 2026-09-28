@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ==============================================================================
 # Stage 1: builder — installs Python deps (uv, from uv.lock) into a venv.
 # Kept separate from the runtime stage so build tools (compilers, etc.)

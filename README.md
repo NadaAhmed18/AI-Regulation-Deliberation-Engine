@@ -39,7 +39,6 @@ Copy the example file:
 ```bash
 cp docker/.env.example docker/.env
 ```
-````
 
 Key defaults in `docker/.env`:
 

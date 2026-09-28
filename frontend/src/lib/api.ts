@@ -8,10 +8,8 @@ import {
     SimulationDetail,
 } from "@/types/simulation";
 
-const BACKEND_HOST = process.env.NEXT_PUBLIC_BACKEND_HOST || "localhost";
-const BACKEND_PORT = process.env.NEXT_PUBLIC_BACKEND_PORT || "8000";
-const BACKEND_URL =
-    process.env.NEXT_PUBLIC_API_URL || `http://${BACKEND_HOST}:${BACKEND_PORT}/api`;
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
+
 
 export const getAvatarPath = (index: number): string => {
     const avatarNum = String((index % 5) + 1).padStart(2, "0");
@@ -187,7 +185,8 @@ export const SimulationAPI = {
     ): () => void {
         const controller = new AbortController();
         const queryParams = intervention ? `?intervention=${encodeURIComponent(intervention)}` : "";
-        const url = `${BACKEND_URL}/simulations/${encodeURIComponent(simulationId)}/stream-turn${queryParams}`;
+        const basePath = BACKEND_URL.endsWith("/") ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
+        const url = `${basePath}/simulations/${encodeURIComponent(simulationId)}/stream-turn${queryParams}`;
 
         (async () => {
             try {

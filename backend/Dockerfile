@@ -40,16 +40,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Create user first so we can assign ownership directly during copy (avoids 34-min chown)
+RUN useradd --create-home --shell /bin/bash appuser
+
 WORKDIR /app
-COPY --from=builder /app /app
+COPY --chown=appuser:appuser --from=builder /app /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
 
-RUN playwright install --with-deps chromium
-
-RUN useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app \
+RUN playwright install --with-deps chromium \
     && chmod -R 755 /ms-playwright
 
 USER appuser

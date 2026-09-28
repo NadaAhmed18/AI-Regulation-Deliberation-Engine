@@ -1,4 +1,5 @@
 # python -m uvicorn src.main:app --reload --port 8000
+import os
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter
@@ -34,15 +35,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Regulation Engine API", lifespan=lifespan)
 
-# Enable CORS for frontend applications
+# --- DYNAMIC CORS CONFIGURATION ---
+# Allows localhost + any custom domain/IP specified in .env, or allows all origins if wildcarded
+raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+if raw_origins == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5000",
-        "http://127.0.0.1:5000",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

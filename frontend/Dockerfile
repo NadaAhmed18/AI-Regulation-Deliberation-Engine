@@ -35,19 +35,20 @@ COPY . .
 RUN npm run build
 
 # ==============================================================================
-# Stage 3: runner — only what's needed to run `next start`.
+# Stage 3: runner — standalone output (no node_modules copied!).
 # ==============================================================================
 FROM node:20-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=5000
+ENV HOSTNAME="0.0.0.0"
 
 RUN useradd --create-home --shell /bin/bash appuser
 
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/next.config.ts ./next.config.ts
+# Copy only standalone build files directly with permissions (no 16-min chown)
+COPY --chown=appuser:appuser --from=builder /app/public ./public
+COPY --chown=appuser:appuser --from=builder /app/.next/standalone ./
+COPY --chown=appuser:appuser --from=builder /app/.next/static ./.next/static
 
 # Server-side rewrites in next.config.ts (the /api/:path* proxy) run
 # inside this container, so BACKEND_HOST here should be the Docker
@@ -58,7 +59,6 @@ COPY --from=builder /app/next.config.ts ./next.config.ts
 ENV BACKEND_HOST=backend
 ENV BACKEND_PORT=8000
 
-RUN chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 5000
@@ -66,4 +66,4 @@ EXPOSE 5000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
     CMD node -e "fetch('http://localhost:5000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["npm", "start"]
+CMD ["node", "server.js"]

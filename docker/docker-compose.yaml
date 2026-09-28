@@ -1,38 +1,24 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
- 
   # ============================================================================
-  # DATA LAYER — each service already has its own dedicated named volume
-  # (bottom of this file), so storage is already isolated per service.
-  # What's new here is the `deploy.resources` block on every service: a
-  # single, explicit compute knob per service, independent of how much
-  # data that service's volume is holding. Bump BACKEND_CPUS or
-  # POSTGRES_MEMORY etc. in .env and re-run `docker compose up -d` --
-  # no data migration, no touching any other service.
-  #
-  # Note: this is a manual knob, not automatic scaling. Docker Compose
-  # has no built-in mechanism that watches volume size and adjusts these
-  # limits on its own -- that's what Kubernetes' HPA/VPA or a cloud
-  # autoscaler do. See docs/ for that distinction if it matters for your
-  # deployment target.
+  # DATA & STORAGE LAYER
+  # Ports are bound to 127.0.0.1: Accessible on your PC, but shielded from external hackers.
   # ============================================================================
- 
   neo4j:
     image: neo4j:5-community
     container_name: neo4j
     restart: always
     ports:
-      - "7474:7474"   # HTTP browser UI
-      - "7687:7687"   # Bolt protocol
+      - "127.0.0.1:7474:7474"   # Neo4j Browser UI (Local only)
+      - "127.0.0.1:7687:7687"   # Bolt Protocol (Local only)
     environment:
-      # Explicit, not env_file -- env_file would load ALL of docker/.env,
-      # including NEO4J_USERNAME/NEO4J_PASSWORD (added only for the
-      # backend app to read). Neo4j's image auto-converts any NEO4J_*
-      # var into a neo4j.conf setting, so those two get mistranslated
-      # into a bogus "PASSWORD"/"USERNAME" config key and crash the
-      # container. NEO4J_AUTH is the actual mechanism for setting
-      # credentials here.
-      NEO4J_AUTH: "${NEO4J_AUTH}"
-      NEO4J_PLUGINS: "${NEO4J_PLUGINS}"
+      NEO4J_AUTH: "${NEO4J_AUTH:-neo4j/password123}"
+      NEO4J_PLUGINS: "${NEO4J_PLUGINS:-[\"apoc\"]}"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -42,44 +28,37 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 90s
+      start_period: 40s
+    logging: *default-logging
     deploy:
       resources:
         limits:
           cpus: "${NEO4J_CPUS:-2}"
           memory: "${NEO4J_MEMORY:-2g}"
-        reservations:
-          cpus: "${NEO4J_CPUS_RESERVED:-0.5}"
-          memory: "${NEO4J_MEMORY_RESERVED:-1g}"
- 
+
   postgres:
     image: postgres:16-alpine
     container_name: postgres
     restart: always
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"   # Local DB GUI access only
     env_file:
       - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Runs once, only on an empty volume -- creates the app's own
-      # "main" database alongside Langfuse's "langfuse" one. See the
-      # comment inside that file for why this is needed.
       - ./postgres-init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-langfuse}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *default-logging
     deploy:
       resources:
         limits:
           cpus: "${POSTGRES_CPUS:-2}"
           memory: "${POSTGRES_MEMORY:-2g}"
-        reservations:
-          cpus: "${POSTGRES_CPUS_RESERVED:-0.5}"
-          memory: "${POSTGRES_MEMORY_RESERVED:-512m}"
- 
+
   clickhouse:
     image: clickhouse/clickhouse-server:24
     container_name: clickhouse
@@ -87,8 +66,8 @@ services:
     env_file:
       - .env
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
@@ -97,41 +76,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: "${CLICKHOUSE_CPUS:-1}"
-          memory: "${CLICKHOUSE_MEMORY:-1g}"
-        reservations:
-          cpus: "${CLICKHOUSE_CPUS_RESERVED:-0.25}"
-          memory: "${CLICKHOUSE_MEMORY_RESERVED:-512m}"
- 
+    logging: *default-logging
+
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
     command: ["redis-server", "--requirepass", "${REDIS_AUTH:-redis123}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_AUTH:-redis123}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: "${REDIS_CPUS:-0.5}"
-          memory: "${REDIS_MEMORY:-256m}"
- 
+    logging: *default-logging
+
   minio:
     image: quay.io/minio/minio:latest
     container_name: minio
     restart: always
     command: server /data --console-address ":9091"
     ports:
-      - "9090:9000"   # S3 API
-      - "9091:9091"   # Web console
+      - "127.0.0.1:9090:9000"
+      - "127.0.0.1:9091:9091"
     env_file:
       - .env
     volumes:
@@ -141,12 +109,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: "${MINIO_CPUS:-0.5}"
-          memory: "${MINIO_MEMORY:-512m}"
- 
+    logging: *default-logging
+
   minio-init:
     image: quay.io/minio/mc:latest
     container_name: minio-init
@@ -159,7 +123,11 @@ services:
       mc mb --ignore-existing localminio/langfuse;
       exit 0;
       "
- 
+    logging: *default-logging
+
+  # ============================================================================
+  # OBSERVABILITY (LANGFUSE)
+  # ============================================================================
   langfuse-web:
     image: langfuse/langfuse:3
     container_name: langfuse-web
@@ -177,15 +145,10 @@ services:
       - "3000:3000"
     env_file:
       - .env
-
     environment:
-      NODE_OPTIONS: "--max-old-space-size=1536"  
-    deploy:
-      resources:
-        limits:
-          cpus: "${LANGFUSE_WEB_CPUS:-1}"
-          memory: "${LANGFUSE_WEB_MEMORY:-1g}"
- 
+      NODE_OPTIONS: "--max-old-space-size=1536"
+    logging: *default-logging
+
   langfuse-worker:
     image: langfuse/langfuse-worker:3
     container_name: langfuse-worker
@@ -201,16 +164,11 @@ services:
         condition: service_completed_successfully
     env_file:
       - .env
-    deploy:
-      resources:
-        limits:
-          cpus: "${LANGFUSE_WORKER_CPUS:-1}"
-          memory: "${LANGFUSE_WORKER_MEMORY:-1g}"
- 
+    logging: *default-logging
+
   # ============================================================================
-  # APPLICATION LAYER — the FastAPI backend and Next.js frontend.
+  # APPLICATION BACKEND & ASYNC WORKERS
   # ============================================================================
- 
   backend:
     build:
       context: ../backend
@@ -220,89 +178,25 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      # Secrets/config split across two files on purpose: backend/.env
-      # holds this app's own secrets (LLM/embedding/search API keys),
-      # docker/.env holds the shared infra credentials (DB passwords,
-      # Langfuse keys) -- both are loaded into the same container.
       - ../backend/.env
       - .env
     environment:
-      # These three override whatever backend/.env has for local
-      # (non-Docker) development -- inside the Compose network,
-      # "localhost" means the backend container itself, not the
-      # postgres/neo4j containers, so these MUST point at the Docker
-      # service names instead.
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD}@postgres:5432/main"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-postgres_langfuse123}@postgres:5432/main"
       NEO4J_URI: "bolt://neo4j:7687"
       LANGFUSE_BASE_URL: "http://langfuse-web:3000"
+      ALLOWED_ORIGINS: "*"
     depends_on:
       postgres:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-      langfuse-web:
-        condition: service_started
+    logging: *default-logging
     deploy:
       resources:
         limits:
-          # This is the single most important knob in this file for the
-          # NLI grader (torch/onnxruntime) and the crawl4ai ingestion
-          # pipeline -- both are CPU/memory heavy. Bump this up first if
-          # simulations feel slow, before touching any DB service.
           cpus: "${BACKEND_CPUS:-2}"
           memory: "${BACKEND_MEMORY:-4g}"
-        reservations:
-          cpus: "${BACKEND_CPUS_RESERVED:-1}"
-          memory: "${BACKEND_MEMORY_RESERVED:-2g}"
-      # To run the NLI grader on an NVIDIA GPU instead of CPU, uncomment
-      # below (requires the NVIDIA Container Toolkit installed on the
-      # Docker host, and a machine that actually has a GPU):
-      #   resources:
-      #     reservations:
-      #       devices:
-      #         - driver: nvidia
-      #           count: 1
-      #           capabilities: [gpu]
- 
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-      args:
-        # Build-time only (see Dockerfile comment) -- this is what the
-        # user's BROWSER will use to reach the backend, so it must be an
-        # address reachable from outside the Docker network (the host's
-        # published port), not the internal "backend" service name.
-        # Override FRONTEND_PUBLIC_BACKEND_HOST in .env for a real
-        # deployment (e.g. your server's domain/IP).
-        NEXT_PUBLIC_BACKEND_HOST: "${FRONTEND_PUBLIC_BACKEND_HOST:-localhost}"
-        NEXT_PUBLIC_BACKEND_PORT: "${FRONTEND_PUBLIC_BACKEND_PORT:-8000}"
-    container_name: frontend
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
-    depends_on:
-      backend:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: "${FRONTEND_CPUS:-1}"
-          memory: "${FRONTEND_MEMORY:-1g}"
- 
-  # ============================================================================
-  # INGESTION COMPUTE — deliberately a SEPARATE service from `backend`,
-  # sharing the same image/code but running as a Celery worker instead
-  # of the FastAPI server. This is what actually achieves
-  # "ingestion compute scales independently of storage AND of API
-  # compute": bump INGESTION_WORKER_REPLICAS (or run
-  # `docker compose up -d --scale ingestion-worker=10`) and every other
-  # service -- backend, the databases, their volumes -- is untouched.
-  #
-  # No `ports:` here on purpose: this service exposes nothing publicly
-  # (it only pulls jobs from Redis), which is exactly what makes it safe
-  # to run multiple replicas of without any host-port conflict.
-  # ============================================================================
+
   ingestion-worker:
     build:
       context: ../backend
@@ -314,14 +208,11 @@ services:
         "--concurrency=${INGESTION_WORKER_CONCURRENCY:-2}",
       ]
     restart: unless-stopped
-
-    healthcheck:
-      disable: true
     env_file:
       - ../backend/.env
       - .env
     environment:
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD}@postgres:5432/main"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-postgres_langfuse123}@postgres:5432/main"
       NEO4J_URI: "bolt://neo4j:7687"
       LANGFUSE_BASE_URL: "http://langfuse-web:3000"
       REDIS_HOST: "redis"
@@ -332,24 +223,49 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+    logging: *default-logging
     deploy:
-      # Independent from BACKEND_CPUS/BACKEND_MEMORY above -- this is
-      # the "ingestion compute pool" from the architecture diagram,
-      # sized and scaled on its own.
       replicas: ${INGESTION_WORKER_REPLICAS:-2}
-      resources:
-        limits:
-          cpus: "${INGESTION_WORKER_CPUS:-1}"
-          memory: "${INGESTION_WORKER_MEMORY:-2g}"
-        reservations:
-          cpus: "${INGESTION_WORKER_CPUS_RESERVED:-0.5}"
-          memory: "${INGESTION_WORKER_MEMORY_RESERVED:-1g}"
- 
+
+  # ============================================================================
+  # APPLICATION FRONTEND (NEXT.JS)
+  # ============================================================================
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      # Directs Next.js server-side rewrites directly to backend container
+      BACKEND_URL: "http://backend:8000"
+    depends_on:
+      backend:
+        condition: service_started
+    logging: *default-logging
+
+  # ============================================================================
+  # SECURE SHARING TUNNEL (CLOUDFLARE)
+  # Runs only when the "tunnel" profile is activated via run.bat
+  # ============================================================================
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflare-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://frontend:5000
+    depends_on:
+      - frontend
+    profiles:
+      - tunnel
+    logging: *default-logging
+
 volumes:
   neo4j_data:
   neo4j_logs:
+  neo4j_config:
   postgres_data:
   clickhouse_data:
   clickhouse_logs:
   minio_data:
-  neo4j_config:

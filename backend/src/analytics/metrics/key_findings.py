@@ -1,8 +1,5 @@
 """
-Topic-Anchored Semantic Accumulator (TASA)
-
-Extracts persistent, low-variance Key Findings and distinct policy sub-topics
-using online vector clustering and one-time micro-LLM distillation.
+Topic-Anchored Semantic Accumulator (TASA) - Polarity-Aware & Robust
 """
 
 import hashlib
@@ -17,13 +14,8 @@ from src.utils.prompt_builder import render_prompt
 
 logger = logging.getLogger(__name__)
 
-# Global in-memory cache to guarantee the LLM is NEVER called twice for the same cluster
 _DISTILLED_STATEMENTS_CACHE: Dict[str, str] = {}
-
-# Global vector cache so we NEVER re-embed already processed turn content
 _EMBEDDING_CACHE: Dict[str, np.ndarray] = {}
-
-# Global singletons
 _EMBEDDER_INSTANCE: Optional[Embedder] = None
 _LLM_INSTANCE: Optional[LLMClient] = None
 
@@ -60,6 +52,7 @@ class KeyFindingCluster:
         self.heat: int = 1
         self.first_round: int = round_num
         self.last_round: int = round_num
+        self.average_stance: float = stance
         self.supporting_agents: Set[str] = set()
         self.opposing_agents: Set[str] = set()
         self.canonical_statement: Optional[str] = None
@@ -70,20 +63,21 @@ class KeyFindingCluster:
     def _record_agent_stance(self, agent_name: str, stance: float):
         if stance >= 0.2:
             self.supporting_agents.add(agent_name)
-            self.opposing_agents.discard(agent_name)
         elif stance <= -0.2:
             self.opposing_agents.add(agent_name)
-            self.supporting_agents.discard(agent_name)
+
+    def is_stance_compatible(self, new_stance: float, max_stance_gap: float = 2.2) -> bool:
+        """Prevents opposing stances (e.g. +3.8 vs -2.6) from collapsing into the same finding."""
+        return abs(self.average_stance - new_stance) <= max_stance_gap
 
     def add_turn(self, vector: np.ndarray, snippet: str, agent_name: str, round_num: int, stance: float):
         norm_v = vector / (np.linalg.norm(vector) + 1e-9)
-        
-        # DAMPED CENTROID UPDATE:
-        # Cap the effective weight to 4. This prevents the centroid from becoming a "black hole"
-        # that averages out over 15 turns and swallows all unrelated sub-topics.
         effective_weight = min(self.heat, 4)
         self.centroid = (self.centroid * effective_weight + norm_v) / (effective_weight + 1)
         self.centroid = self.centroid / (np.linalg.norm(self.centroid) + 1e-9)
+
+        # Update running stance average
+        self.average_stance = (self.average_stance * self.heat + stance) / (self.heat + 1)
 
         if len(self.snippets) < 6:
             self.snippets.append(snippet)
@@ -93,8 +87,7 @@ class KeyFindingCluster:
         self._record_agent_stance(agent_name, stance)
 
     def distill_summary(self, llm_client: LLMClient) -> None:
-        """Synthesizes arguments into an 8 to 14 word thematic policy finding."""
-        # Use first and latest snippets to capture progression
+        """Synthesizes arguments into an authoritative 8 to 14 word policy finding."""
         selected_snippets = self.snippets[:2] + self.snippets[-2:] if len(self.snippets) > 3 else self.snippets
         cache_key = hashlib.md5(" ".join(selected_snippets).encode()).hexdigest()
 
@@ -117,7 +110,7 @@ class KeyFindingCluster:
         try:
             res = llm_client.generate_response(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
+                max_tokens=250,
             )
             distilled = res.get("content", "").strip().strip('"').strip("'")
             if not distilled or len(distilled.split()) < 4:
@@ -131,6 +124,7 @@ class KeyFindingCluster:
         self.is_confirmed = True
 
     def to_dict(self) -> Dict[str, Any]:
+        """Provides both snake_case and camelCase to satisfy any frontend schema."""
         return {
             "id": self.id,
             "statement": self.canonical_statement or (self.snippets[0][:90] + "..."),
@@ -138,18 +132,23 @@ class KeyFindingCluster:
             "status": "confirmed" if self.is_confirmed else "candidate",
             "supporting_agents": sorted(list(self.supporting_agents)),
             "opposing_agents": sorted(list(self.opposing_agents)),
+            # Resolves "Rounds 1-??" on frontend
             "first_round": self.first_round,
             "last_round": self.last_round,
+            "firstRound": self.first_round,
+            "lastRound": self.last_round,
+            "end_round": self.last_round,
+            "endRound": self.last_round,
         }
 
 
 def extract_key_findings(
     topic: str,
     history_rows: List[Dict[str, Any]],
-    similarity_threshold: float = 0.80, 
+    similarity_threshold: float = 0.81,
     heat_threshold: int = 2,
 ) -> List[Dict[str, Any]]:
-    """Extracts diverse, stable key findings across debate rounds."""
+    """Extracts polarized, distinct key findings across debate turns."""
     if not history_rows:
         return []
 
@@ -196,12 +195,15 @@ def extract_key_findings(
         best_sim: float = -1.0
 
         for c in clusters:
+            # Check polarity compatibility first: don't merge anti-mandate into pro-mandate
+            if not c.is_stance_compatible(stance):
+                continue
+
             sim = float(np.dot(c.centroid, norm_v))
             if sim > best_sim:
                 best_sim = sim
                 best_cluster = c
 
-        # Only merge if similarity is exceptionally high (distinct sub-arguments)
         if best_cluster and best_sim >= similarity_threshold:
             best_cluster.add_turn(
                 vector=vector,
@@ -223,8 +225,14 @@ def extract_key_findings(
             )
             clusters.append(new_cluster)
 
-    # Distill after all debate turns are mapped
-    confirmed_clusters: List[KeyFindingCluster] = [c for c in clusters if c.heat >= heat_threshold]
+    # Distill all confirmed clusters
+    confirmed_clusters = [c for c in clusters if c.heat >= heat_threshold]
+
+    # Fallback: If threshold was too strict and no cluster reached heat_threshold,
+    # pick the top clusters with the highest heat
+    if not confirmed_clusters and clusters:
+        clusters.sort(key=lambda k: k.heat, reverse=True)
+        confirmed_clusters = clusters[:2]
 
     for c in confirmed_clusters:
         if not c.canonical_statement:

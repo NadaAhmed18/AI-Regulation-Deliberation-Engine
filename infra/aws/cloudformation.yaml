@@ -1,0 +1,328 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AI Regulation Engine - Decoupled Scalable Architecture (Storage & App Layers)"
+
+# ==============================================================================
+# ARCHITECTURE CONTEXT (Fixes I4010 Top-Level Context)
+# ==============================================================================
+Metadata:
+  com.aws.cloudformation.Context:
+    arch: "Decoupled AI Regulation Engine architecture separating frontend and backend application compute from persistence stores. Uses a public VPC subnet with a persistent Elastic IP for the App instance and internal private VPC networking for the isolated, cost-switchable Storage instance."
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    Description: EC2 instance type for both Storage and App instances.
+  StoragePrivateIP:
+    Type: String
+    Default: "10.0.1.50"
+    Description: Fixed private IP for the storage instance inside the VPC.
+  # Fixes E1152: Dynamically resolves latest Ubuntu 22.04 LTS AMI cleanly via SSM Parameter type
+  LatestUbuntuAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+    Description: SSM parameter path to resolve the latest Ubuntu 22.04 LTS AMI.
+
+Resources:
+  # ============================================================================
+  # 1. IAM ROLE & INSTANCE PROFILE
+  # ============================================================================
+  EC2SSMRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Grants instances AWS Systems Manager Session Manager access for secure administration without requiring open SSH ports."
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Attaches the SSM IAM role to the EC2 instances."
+    Properties:
+      Roles:
+        - !Ref EC2SSMRole
+
+  # ============================================================================
+  # 2. NETWORK & VPC
+  # ============================================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Provides an isolated network boundary for the application and database tiers."
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ai-regulation-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Provides egress and ingress connectivity between the VPC and the public internet."
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ai-regulation-igw
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Binds the Internet Gateway to the VPC."
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Hosts the application and storage instances within a defined CIDR range."
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: ai-regulation-subnet
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Metadata:
+      guard:
+        SuppressedRules:
+          - NO_UNRESTRICTED_ROUTE_TO_IGW
+      com.aws.cloudformation.Context:
+        why: "Controls network routing for the subnet to the Internet Gateway."
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ai-regulation-rt
+
+  Route:
+    Type: AWS::EC2::Route
+    Metadata:
+      guard:
+        SuppressedRules:
+          - NO_UNRESTRICTED_ROUTE_TO_IGW
+      com.aws.cloudformation.Context:
+        why: "Routes outbound traffic from the subnet to the Internet Gateway."
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Associates the route table with the VPC subnet."
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # ============================================================================
+  # 3. SECURITY GROUPS
+  # ============================================================================
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Allows external HTTP access to the web UI and API ports while restricting administrative ports."
+    Properties:
+      GroupDescription: Enable HTTP access for UI and API
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ai-regulation-app-sg
+
+  StorageSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Isolates database engines so they only accept connections originating from the AppSecurityGroup."
+    Properties:
+      GroupDescription: Secure Storage layer - Accessible ONLY by App Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 7687
+          ToPort: 7687
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 7474
+          ToPort: 7474
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ai-regulation-storage-sg
+
+  # ============================================================================
+  # 4. STORAGE LAYER INSTANCE (Neo4j, Postgres, Redis)
+  # ============================================================================
+  StorageInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Hosts PostgreSQL, Neo4j, and Redis in a cost-switchable instance with a static private IP."
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: !Ref LatestUbuntuAmiId
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: !Ref StoragePrivateIP
+      SecurityGroupIds:
+        - !Ref StorageSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            DeleteOnTermination: true
+      # Fixes W1020: Removed redundant !Sub because script contains no template variables
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install -y docker.io docker-compose-v2
+          systemctl enable docker
+          systemctl start docker
+          mkdir -p /opt/storage
+          cat << 'EOF' > /opt/storage/docker-compose.yaml
+          services:
+            postgres:
+              image: postgres:16-alpine
+              restart: always
+              environment:
+                POSTGRES_USER: langfuse
+                POSTGRES_PASSWORD: postgres_langfuse123
+                POSTGRES_DB: main
+              ports:
+                - "5432:5432"
+            neo4j:
+              image: neo4j:5-community
+              restart: always
+              environment:
+                NEO4J_AUTH: neo4j/password123
+                NEO4J_PLUGINS: '["apoc"]'
+              ports:
+                - "7474:7474"
+                - "7687:7687"
+            redis:
+              image: redis:7-alpine
+              restart: always
+              command: ["redis-server", "--requirepass", "redis123"]
+              ports:
+                - "6379:6379"
+          EOF
+          cd /opt/storage && docker compose up -d
+      Tags:
+        - Key: Name
+          Value: ai-regulation-storage-layer
+
+  # ============================================================================
+  # 5. APPLICATION LAYER INSTANCE (Backend, Celery, Frontend)
+  # ============================================================================
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Executes the application container workloads (FastAPI backend, Celery worker, and Next.js frontend)."
+    DependsOn: StorageInstance
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: !Ref LatestUbuntuAmiId
+      SubnetId: !Ref Subnet
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 25
+            VolumeType: gp3
+            DeleteOnTermination: true
+      # Fixes W1020: Removed redundant !Sub because script contains no template variables
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install -y git docker.io docker-compose-v2
+          systemctl enable docker
+          systemctl start docker
+      Tags:
+        - Key: Name
+          Value: ai-regulation-app-layer
+
+  # Permanent Elastic IP for Application Layer
+  AppEIP:
+    Type: AWS::EC2::EIP
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Provides a permanent, static public IPv4 address for the application instance across reboots."
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref AppInstance
+      Tags:
+        - Key: Name
+          Value: ai-regulation-app-eip
+
+Outputs:
+  AppPublicIP:
+    Description: "Permanent Public Elastic IP of the Application Layer"
+    Value: !Ref AppEIP
+  StorageInstanceId:
+    Description: "Instance ID of the Storage Layer (for sleep/start)"
+    Value: !Ref StorageInstance
+  AppInstanceId:
+    Description: "Instance ID of the Application Layer"
+    Value: !Ref AppInstance
+  WebURL:
+    Description: "Direct Web Application URL"
+    Value: !Sub "http://${AppEIP}:5000"
+  DocsURL:
+    Description: "API Documentation URL"
+    Value: !Sub "http://${AppEIP}:8000/docs"

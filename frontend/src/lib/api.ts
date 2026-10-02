@@ -10,7 +10,6 @@ import {
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
 
-
 export const getAvatarPath = (index: number): string => {
     const avatarNum = String((index % 5) + 1).padStart(2, "0");
     return `/avatar/${avatarNum}.png`;
@@ -19,7 +18,8 @@ export const getAvatarPath = (index: number): string => {
 export const apiClient = axios.create({
     baseURL: BACKEND_URL,
     headers: { "Content-Type": "application/json" },
-    timeout: 45000,
+    // Increased to 90s: Frontier LLM reasoning + RAG tool searches can exceed 45s
+    timeout: 90000,
 });
 
 export const extractErrorMessage = (error: unknown): string => {
@@ -169,6 +169,7 @@ export const SimulationAPI = {
 
     /**
      * SSE Stream Consumer for live turn execution
+     * Hardened with anti-buffering headers and cross-platform line-break handling.
      */
     streamTurn(
         simulationId: string,
@@ -191,8 +192,14 @@ export const SimulationAPI = {
         (async () => {
             try {
                 const response = await fetch(url, {
+                    // CRITICAL: POST bypasses Cloudflare Quick Tunnel's edge buffer
+                    method: "POST",
                     signal: controller.signal,
-                    headers: { Accept: "text/event-stream" },
+                    headers: {
+                        "Accept": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                    },
                 });
 
                 if (!response.ok) {
@@ -202,7 +209,7 @@ export const SimulationAPI = {
                 const reader = response.body?.getReader();
                 if (!reader) throw new Error("No response body reader available.");
 
-                const decoder = new TextDecoder();
+                const decoder = new TextDecoder("utf-8");
                 let buffer = "";
 
                 while (true) {
@@ -210,15 +217,15 @@ export const SimulationAPI = {
                     if (done) break;
 
                     buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split("\n\n");
-                    buffer = lines.pop() || "";
+                    const chunks = buffer.split(/\r?\n\r?\n/);
+                    buffer = chunks.pop() || "";
 
-                    for (const chunk of lines) {
+                    for (const chunk of chunks) {
                         if (!chunk.trim()) continue;
                         let eventType = "message";
                         let dataStr = "";
 
-                        for (const line of chunk.split("\n")) {
+                        for (const line of chunk.split(/\r?\n/)) {
                             if (line.startsWith("event:")) {
                                 eventType = line.slice(6).trim();
                             } else if (line.startsWith("data:")) {
@@ -250,7 +257,7 @@ export const SimulationAPI = {
                                 callbacks.onError?.(parsed.message || "Streaming execution error.");
                             }
                         } catch {
-                            // Ignore non-JSON ping/keepalive chunks
+                            // Ignore non-JSON keepalive/ping comments
                         }
                     }
                 }

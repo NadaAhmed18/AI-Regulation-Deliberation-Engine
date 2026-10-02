@@ -6,16 +6,15 @@ x-logging: &default-logging
 
 services:
   # ============================================================================
-  # DATA & STORAGE LAYER
-  # Ports are bound to 127.0.0.1: Accessible on your PC, but shielded from external hackers.
+  # 1. CORE STORAGE LAYER (Runs by default)
   # ============================================================================
   neo4j:
     image: neo4j:5-community
     container_name: neo4j
     restart: always
     ports:
-      - "127.0.0.1:7474:7474"   # Neo4j Browser UI (Local only)
-      - "127.0.0.1:7687:7687"   # Bolt Protocol (Local only)
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
     environment:
       NEO4J_AUTH: "${NEO4J_AUTH:-neo4j/password123}"
       NEO4J_PLUGINS: "${NEO4J_PLUGINS:-[\"apoc\"]}"
@@ -30,18 +29,13 @@ services:
       retries: 20
       start_period: 40s
     logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: "${NEO4J_CPUS:-2}"
-          memory: "${NEO4J_MEMORY:-2g}"
 
   postgres:
     image: postgres:16-alpine
     container_name: postgres
     restart: always
     ports:
-      - "127.0.0.1:5432:5432"   # Local DB GUI access only
+      - "127.0.0.1:5432:5432"
     env_file:
       - .env
     volumes:
@@ -50,30 +44,6 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-langfuse}"]
       interval: 5s
-      timeout: 5s
-      retries: 10
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: "${POSTGRES_CPUS:-2}"
-          memory: "${POSTGRES_MEMORY:-2g}"
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:24
-    container_name: clickhouse
-    restart: always
-    env_file:
-      - .env
-    ports:
-      - "127.0.0.1:8123:8123"
-      - "127.0.0.1:9000:9000"
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-      - clickhouse_logs:/var/log/clickhouse-server
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
-      interval: 10s
       timeout: 5s
       retries: 10
     logging: *default-logging
@@ -92,10 +62,111 @@ services:
       retries: 10
     logging: *default-logging
 
+  # ============================================================================
+  # 2. APPLICATION LAYER (Runs by default - local build or Docker Hub pull)
+  # ============================================================================
+  backend:
+    image: "${DOCKER_USER:-local}/ai-regulation-backend:latest"
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../backend/.env
+      - .env
+    environment:
+      # Defaults to local container DNS, or overrides to AWS private IP if DB_HOST is set
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-postgres_langfuse123}@${DB_HOST:-postgres}:5432/main"
+      NEO4J_URI: "bolt://${NEO4J_HOST:-neo4j}:7687"
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      LANGFUSE_BASE_URL: "${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}"
+      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-}"
+      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-}"
+      ALLOWED_ORIGINS: "*"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    logging: *default-logging
+
+  ingestion-worker:
+    image: "${DOCKER_USER:-local}/ai-regulation-backend:latest"
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ingestion-worker
+    command: ["celery", "-A", "src.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env
+      - .env
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-postgres_langfuse123}@${DB_HOST:-postgres}:5432/main"
+      NEO4J_URI: "bolt://${NEO4J_HOST:-neo4j}:7687"
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      LANGFUSE_BASE_URL: "${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}"
+      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-}"
+      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    logging: *default-logging
+
+  frontend:
+    image: "${DOCKER_USER:-local}/ai-regulation-frontend:latest"
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      BACKEND_URL: "http://backend:8000"
+    depends_on:
+      backend:
+        condition: service_started
+    logging: *default-logging
+
+  # ============================================================================
+  # 3. OPTIONAL LOCAL OBSERVABILITY (Self-Hosted Langfuse)
+  # [DORMANT BY DEFAULT - Starts ONLY with: --profile langfuse-local]
+  # ============================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    container_name: clickhouse
+    restart: always
+    profiles:
+      - langfuse-local
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
   minio:
     image: quay.io/minio/minio:latest
     container_name: minio
     restart: always
+    profiles:
+      - langfuse-local
     command: server /data --console-address ":9091"
     ports:
       - "127.0.0.1:9090:9000"
@@ -114,6 +185,8 @@ services:
   minio-init:
     image: quay.io/minio/mc:latest
     container_name: minio-init
+    profiles:
+      - langfuse-local
     depends_on:
       minio:
         condition: service_healthy
@@ -125,13 +198,12 @@ services:
       "
     logging: *default-logging
 
-  # ============================================================================
-  # OBSERVABILITY (LANGFUSE)
-  # ============================================================================
   langfuse-web:
     image: langfuse/langfuse:3
     container_name: langfuse-web
     restart: always
+    profiles:
+      - langfuse-local
     depends_on:
       postgres:
         condition: service_healthy
@@ -153,6 +225,8 @@ services:
     image: langfuse/langfuse-worker:3
     container_name: langfuse-worker
     restart: always
+    profiles:
+      - langfuse-local
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,88 +241,8 @@ services:
     logging: *default-logging
 
   # ============================================================================
-  # APPLICATION BACKEND & ASYNC WORKERS
-  # ============================================================================
-  backend:
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
-    container_name: backend
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    env_file:
-      - ../backend/.env
-      - .env
-    environment:
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-postgres_langfuse123}@postgres:5432/main"
-      NEO4J_URI: "bolt://neo4j:7687"
-      LANGFUSE_BASE_URL: "http://langfuse-web:3000"
-      ALLOWED_ORIGINS: "*"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: "${BACKEND_CPUS:-2}"
-          memory: "${BACKEND_MEMORY:-4g}"
-
-  ingestion-worker:
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
-    command:
-      [
-        "celery", "-A", "src.tasks.celery_app", "worker",
-        "--loglevel=info",
-        "--concurrency=${INGESTION_WORKER_CONCURRENCY:-2}",
-      ]
-    restart: unless-stopped
-    env_file:
-      - ../backend/.env
-      - .env
-    environment:
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-postgres_langfuse123}@postgres:5432/main"
-      NEO4J_URI: "bolt://neo4j:7687"
-      LANGFUSE_BASE_URL: "http://langfuse-web:3000"
-      REDIS_HOST: "redis"
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-    logging: *default-logging
-    deploy:
-      replicas: ${INGESTION_WORKER_REPLICAS:-2}
-
-  # ============================================================================
-  # APPLICATION FRONTEND (NEXT.JS)
-  # ============================================================================
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-    container_name: frontend
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
-    environment:
-      # Directs Next.js server-side rewrites directly to backend container
-      BACKEND_URL: "http://backend:8000"
-    depends_on:
-      backend:
-        condition: service_started
-    logging: *default-logging
-
-  # ============================================================================
-  # SECURE SHARING TUNNEL (CLOUDFLARE)
-  # Runs only when the "tunnel" profile is activated via run.bat
+  # 4. PUBLIC CLOUDFLARE TUNNEL
+  # [DORMANT BY DEFAULT - Starts ONLY with: --profile tunnel]
   # ============================================================================
   tunnel:
     image: cloudflare/cloudflared:latest

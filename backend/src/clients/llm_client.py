@@ -1,17 +1,27 @@
+import os
 import json
+import logging
 from typing import Dict, Optional, Any, Iterator, List
-from langfuse.openai import OpenAI as LangfuseOpenAI  # type: ignore
 
 from src.config import (
     DEFAULT_MODEL,
     OPENROUTER_API_KEY,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_MAX_COMPLETION_TOKENS,
+    LANGFUSE_ENABLED,
+    LANGFUSE_PUBLIC_KEY,
+    LANGFUSE_SECRET_KEY,
+    LANGFUSE_BASE_URL,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """OpenRouter LLM Client with Langfuse observability."""
+    """
+    OpenRouter LLM Client with optional Langfuse observability.
+    Falls back to native openai.OpenAI if Langfuse credentials are not provided.
+    """
 
     def __init__(
         self,
@@ -28,10 +38,26 @@ class LLMClient:
         self.default_reasoning_effort = default_reasoning_effort
         self.default_max_tokens = default_max_tokens
 
-        self._client = LangfuseOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
-        )
+        # Conditionally initialize the client
+        if LANGFUSE_ENABLED:
+            logger.info("Initializing LLMClient with Langfuse tracing at: %s", LANGFUSE_BASE_URL)
+            # Ensure the Langfuse SDK picks up the remote host and keys
+            os.environ["LANGFUSE_PUBLIC_KEY"] = LANGFUSE_PUBLIC_KEY
+            os.environ["LANGFUSE_SECRET_KEY"] = LANGFUSE_SECRET_KEY
+            os.environ["LANGFUSE_HOST"] = LANGFUSE_BASE_URL
+
+            from langfuse.openai import OpenAI as LangfuseOpenAI # type: ignore
+            self._client = LangfuseOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+            )
+        else:
+            logger.info("Langfuse credentials not set. Running in direct OpenAI client mode.")
+            from openai import OpenAI
+            self._client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+            )
 
     def _prepare_kwargs(
         self,

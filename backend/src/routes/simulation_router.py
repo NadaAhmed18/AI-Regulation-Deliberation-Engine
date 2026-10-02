@@ -19,20 +19,26 @@ from src.utils.response import fail_response, success_response
 logger = logging.getLogger("uvicorn")
 simulation_router = APIRouter(tags=["simulations"])
 
+# Define standard anti-buffering SSE headers
+SSE_HEADERS = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",  # CRITICAL: Disables Cloudflare & Nginx edge proxy buffering
+}
 
 # ============================================================================
 # 1. LIVE EXECUTION & SSE STREAMING
 # ============================================================================
-@simulation_router.get("/simulations/{simulationId}/stream-turn")
+@simulation_router.api_route("/simulations/{simulationId}/stream-turn", methods=["GET", "POST"])
 def stream_turn(
     simulationId: str,
     intervention: Optional[str] = Query(None, description="Human moderator steering input"),
     sim_ctrl: SimulationController = Depends(get_simulation_controller),
 ):
     """
-    Streams turn execution via SSE:
-    Emits speaker selection, thinking tokens, generation tokens, tool usage,
-    and finishes with 'turn_complete' carrying the updated analytics.
+    Streams turn execution via SSE.
+    Accepts both GET and POST (POST is required to bypass Cloudflare Tunnel GET buffering).
     """
     if not sim_ctrl.repo.get_simulation_by_id(simulationId):
         raise HTTPException(status_code=404, detail=f"Simulation '{simulationId}' not found.")
@@ -49,7 +55,7 @@ def stream_turn(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers=SSE_HEADERS,
     )
 
 
@@ -87,7 +93,7 @@ def start_simulation(
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers=SSE_HEADERS,
         )
     except Exception as e:
         logger.exception("Failed to start simulation")

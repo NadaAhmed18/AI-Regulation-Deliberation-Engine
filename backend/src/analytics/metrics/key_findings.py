@@ -85,50 +85,46 @@ class KeyFindingCluster:
         self.centroid = (self.centroid * effective_weight + norm_v) / (effective_weight + 1)
         self.centroid = self.centroid / (np.linalg.norm(self.centroid) + 1e-9)
 
-        if len(self.snippets) < 5:
+        if len(self.snippets) < 6:
             self.snippets.append(snippet)
 
         self.heat += 1
         self.last_round = max(self.last_round, round_num)
         self._record_agent_stance(agent_name, stance)
 
-    def promote_to_confirmed(self, llm_client: LLMClient) -> None:
-        """Synthesizes arguments into a thematic policy finding using key_finding_distiller.txt."""
-        cache_key = hashlib.md5(" ".join(self.snippets[:3]).encode()).hexdigest()
+    def distill_summary(self, llm_client: LLMClient) -> None:
+        """Synthesizes arguments into an 8 to 14 word thematic policy finding."""
+        # Use first and latest snippets to capture progression
+        selected_snippets = self.snippets[:2] + self.snippets[-2:] if len(self.snippets) > 3 else self.snippets
+        cache_key = hashlib.md5(" ".join(selected_snippets).encode()).hexdigest()
 
         if cache_key in _DISTILLED_STATEMENTS_CACHE:
             self.canonical_statement = _DISTILLED_STATEMENTS_CACHE[cache_key]
             self.is_confirmed = True
             return
 
-        formatted_snippets = "\n".join(f"- {s[:250]}..." if len(s) > 250 else f"- {s}" for s in self.snippets[:3])
-
+        formatted = "\n".join(f"- {s[:280]}..." for s in selected_snippets)
         try:
-            prompt = render_prompt(
-                "key_finding_distiller",
-                topic=self.topic,
-                snippets=formatted_snippets,
-            )
+            prompt = render_prompt("key_finding_distiller", topic=self.topic, snippets=formatted)
         except Exception:
-            # Fallback if template file is being placed
             prompt = (
                 f"Topic: '{self.topic}'\n"
-                f"Arguments:\n{formatted_snippets}\n\n"
-                "Synthesize the overarching thematic policy finding or contention in 8 to 14 words. "
-                "Do NOT cite specific article numbers. Return ONLY the finding."
+                f"Arguments:\n{formatted}\n\n"
+                "Synthesize the overarching thematic contention in 8 to 14 words. "
+                "Return ONLY the distilled finding string."
             )
 
         try:
             res = llm_client.generate_response(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=60,
+                max_tokens=300,
             )
             distilled = res.get("content", "").strip().strip('"').strip("'")
-            if not distilled or len(distilled) < 10:
-                distilled = self.snippets[0][:80] + "..."
+            if not distilled or len(distilled.split()) < 4:
+                distilled = self.snippets[0][:90] + "..."
         except Exception as e:
-            logger.warning(f"Error distilling key finding cluster: {e}")
-            distilled = self.snippets[0][:80] + "..."
+            logger.warning(f"Error distilling cluster: {e}")
+            distilled = self.snippets[0][:90] + "..."
 
         _DISTILLED_STATEMENTS_CACHE[cache_key] = distilled
         self.canonical_statement = distilled
@@ -137,7 +133,7 @@ class KeyFindingCluster:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
-            "statement": self.canonical_statement or self.snippets[0][:90] + "...",
+            "statement": self.canonical_statement or (self.snippets[0][:90] + "..."),
             "heat": self.heat,
             "status": "confirmed" if self.is_confirmed else "candidate",
             "supporting_agents": sorted(list(self.supporting_agents)),
@@ -150,13 +146,10 @@ class KeyFindingCluster:
 def extract_key_findings(
     topic: str,
     history_rows: List[Dict[str, Any]],
-    similarity_threshold: float = 0.84,  # Increased from 0.76 to separate distinct sub-topics
-    heat_threshold: int = 2,             # Lowered from 3 to allow emerging themes to qualify
+    similarity_threshold: float = 0.80, 
+    heat_threshold: int = 2,
 ) -> List[Dict[str, Any]]:
-    """
-    Extracts diverse, stable key findings across historical debate turns.
-    Returns confirmed findings (heat >= heat_threshold).
-    """
+    """Extracts diverse, stable key findings across debate rounds."""
     if not history_rows:
         return []
 
@@ -208,7 +201,7 @@ def extract_key_findings(
                 best_sim = sim
                 best_cluster = c
 
-        # If similarity exceeds threshold, add to existing cluster; otherwise fork into a new one
+        # Only merge if similarity is exceptionally high (distinct sub-arguments)
         if best_cluster and best_sim >= similarity_threshold:
             best_cluster.add_turn(
                 vector=vector,
@@ -217,8 +210,6 @@ def extract_key_findings(
                 round_num=round_num,
                 stance=stance,
             )
-            if best_cluster.heat >= heat_threshold and not best_cluster.is_confirmed:
-                best_cluster.promote_to_confirmed(llm)
         else:
             new_id = f"kf_{content_hash[:8]}"
             new_cluster = KeyFindingCluster(
@@ -232,7 +223,13 @@ def extract_key_findings(
             )
             clusters.append(new_cluster)
 
-    # Return confirmed clusters, sorted by heat (most debated first)
-    confirmed = [c.to_dict() for c in clusters if c.is_confirmed]
-    confirmed.sort(key=lambda k: k["heat"], reverse=True)
-    return confirmed
+    # Distill after all debate turns are mapped
+    confirmed_clusters: List[KeyFindingCluster] = [c for c in clusters if c.heat >= heat_threshold]
+
+    for c in confirmed_clusters:
+        if not c.canonical_statement:
+            c.distill_summary(llm)
+
+    confirmed_dicts = [c.to_dict() for c in confirmed_clusters if c.is_confirmed]
+    confirmed_dicts.sort(key=lambda k: k["heat"], reverse=True)
+    return confirmed_dicts

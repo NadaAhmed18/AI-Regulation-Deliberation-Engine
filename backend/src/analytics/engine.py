@@ -88,7 +88,7 @@ class DiscussionAnalyticsEngine:
         key_findings = extract_key_findings(
             topic=topic,
             history_rows=history,
-            similarity_threshold=0.76,
+            similarity_threshold=0.8,
             heat_threshold=3,
         )
 

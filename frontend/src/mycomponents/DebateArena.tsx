@@ -99,58 +99,79 @@ function parseAndFormatContent(
     }
   });
 
-  const bracketCitationRegex = /【([^】]+)】/g;
+  // Matches Markdown links [Title](https://...), Unicode brackets 【...】, or standard numeric brackets [1]
+  const citationRegex =
+    /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)|【([^】]+)】|\[(\d+)\]/g;
   const segments: React.ReactNode[] = [];
   let lastIdx = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = bracketCitationRegex.exec(content)) !== null) {
+  while ((match = citationRegex.exec(content)) !== null) {
     const textBefore = content.substring(lastIdx, match.index);
     if (textBefore) {
       segments.push(renderMarkdownFormatting(textBefore, `txt-${lastIdx}`));
     }
 
-    const rawInner = match[1];
-    const inner = rawInner.replace(/[\u202F\u00A0\r\n\t]/g, " ").trim();
-    const directUrlMatch = inner.match(/https?:\/\/[^\s】]+/i);
-
-    let sourceNum: number | null = null;
-    let locator: string | undefined = undefined;
-
-    if (inner.includes("†")) {
-      const parts = inner.split("†").map((p) => p.trim());
-      const numMatchLeft = parts[0].match(/\d+/);
-      const numMatchRight = parts[1].match(/\d+/);
-
-      if (numMatchLeft) {
-        sourceNum = parseInt(numMatchLeft[0], 10);
-        if (
-          parts[1].toLowerCase() !== "source" &&
-          !parts[1].startsWith("http")
-        ) {
-          locator = parts[1];
-        }
-      } else if (numMatchRight) {
-        sourceNum = parseInt(numMatchRight[0], 10);
-      }
-    } else {
-      const numMatch = inner.match(/\d+/);
-      if (numMatch) {
-        sourceNum = parseInt(numMatch[0], 10);
-      }
-    }
-
     let targetUrl = "";
     let displayIdx = 0;
+    let locator: string | undefined = undefined;
+    let sourceNum: number | null = null;
 
-    if (directUrlMatch) {
-      targetUrl = directUrlMatch[0];
+    // Case 1: Standard Markdown Link -> [Title](https://...)
+    if (match[1] && match[2]) {
+      locator = match[1].trim();
+      targetUrl = match[2].trim();
       displayIdx = registerUrl(targetUrl, locator);
-    } else if (sourceNum !== null) {
+    }
+    // Case 2: Full-width bracket -> 【...】
+    else if (match[3]) {
+      const rawInner = match[3];
+      const inner = rawInner.replace(/[\u202F\u00A0\r\n\t]/g, " ").trim();
+      const directUrlMatch = inner.match(/https?:\/\/[^\s】]+/i);
+
+      if (inner.includes("†")) {
+        const parts = inner.split("†").map((p) => p.trim());
+        const numMatchLeft = parts[0].match(/\d+/);
+        const numMatchRight = parts[1].match(/\d+/);
+
+        if (numMatchLeft) {
+          sourceNum = parseInt(numMatchLeft[0], 10);
+          if (
+            parts[1].toLowerCase() !== "source" &&
+            !parts[1].startsWith("http")
+          ) {
+            locator = parts[1];
+          }
+        } else if (numMatchRight) {
+          sourceNum = parseInt(numMatchRight[0], 10);
+        }
+      } else {
+        const numMatch = inner.match(/\d+/);
+        if (numMatch) {
+          sourceNum = parseInt(numMatch[0], 10);
+        }
+      }
+
+      if (directUrlMatch) {
+        targetUrl = directUrlMatch[0];
+        displayIdx = registerUrl(targetUrl, locator);
+      } else if (sourceNum !== null) {
+        const candidateUrl = extraSources[sourceNum - 1];
+        if (candidateUrl) {
+          targetUrl = candidateUrl;
+          displayIdx = registerUrl(targetUrl, locator);
+        } else {
+          displayIdx = sourceNum;
+        }
+      }
+    }
+    // Case 3: Numeric bracket -> [1]
+    else if (match[4]) {
+      sourceNum = parseInt(match[4], 10);
       const candidateUrl = extraSources[sourceNum - 1];
       if (candidateUrl) {
         targetUrl = candidateUrl;
-        displayIdx = registerUrl(targetUrl, locator);
+        displayIdx = registerUrl(targetUrl);
       } else {
         displayIdx = sourceNum;
       }
